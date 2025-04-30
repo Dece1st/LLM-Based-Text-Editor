@@ -12,24 +12,25 @@ LLM_instruction = "You are a grammar correction AI. Fix errors grammar and spell
 printWords = []
 
 if st.button("Submit") and user_input.strip():
-    response = ollama.chat(
-        model = "mistral",
-        messages = [
-            {"role": "system", "content": LLM_instruction},
-            {"role": "user", "content": user_input}
-        ]
-    )
-    output = response['message']['content']
-    splitPut = output.split()
-    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
+    if user_input.strip():
+        response = ollama.chat(
+            model = "mistral",
+            messages = [
+                {"role": "system", "content": LLM_instruction},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        output = response['message']['content']
+        splitPut = output.split()
+        diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
 
-    st.subheader("✅ Corrected Text:")
+        st.subheader("✅ Corrected Text:")
 
-    for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
-        if status == 'equal':
-            printWords.extend(splitPut[cStart:cEnd])
-        else:
-            for x in range (cStart, cEnd):
-                printWords.append(f'<span style="background-color: orangered; border-radius: 8px; padding: 0px 4px; display: inline-block;">{splitPut[x]}</span>')
-    st.markdown(" ".join(printWords), unsafe_allow_html=True)
-else: st.warning("Input can't be empty.")
+        for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
+            if status == 'equal':
+                printWords.extend(splitPut[cStart:cEnd])
+            else:
+                for x in range (cStart, cEnd):
+                    printWords.append(f'<span style="background-color: orangered; border-radius: 8px; padding: 0px 4px; display: inline-block;">{splitPut[x]}</span>')
+        st.markdown(" ".join(printWords), unsafe_allow_html=True)
+    else: st.warning("Input can't be empty.")
