@@ -15,8 +15,23 @@ def set_db():
             type TEXT DEFAULT 'F'
         )'''
     )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS token (
+            name TEXT PRIMARY KEY,
+            available INTEGER DEFAULT 0,
+            used INTEGER DEFAULT 0,
+            FOREIGN KEY (name) REFERENCES account(name)
+        )'''
+    )
     con.commit()
     con.close()
+
+def get_page():
+    return st.query_params.get("page", "login")
+
+def set_page(page):
+    st.query_params["page"] = page
+    st.rerun()
 
 def hash_word(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -26,8 +41,7 @@ def add_user(name, type, password):
     cur = con.cursor()
     hash_password = hash_word(password)
     try:
-        cur.execute("INSERT INTO account (name, password, type) VALUES (?, ?, ?)",
-                 (name, hash_password, type))
+        cur.execute("INSERT INTO account (name, password, type) VALUES (?, ?, ?)", (name, hash_password, type))
         con.commit()
         return True
     except sqlite3.IntegrityError:
@@ -45,12 +59,27 @@ def search_user(name, password):
     con.close()
     return result[0] if result else None
 
-def get_page():
-    return st.query_params.get("page", "login")
+def logout_user():
+    st.session_state['auth_stat'] = None
+    st.session_state['name'] = None
+    st.session_state['type'] = None
+    set_page("login")
 
-def set_page(page):
-    st.query_params["page"] = page
-    st.rerun()
+def free_to_paid(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("UPDATE account SET type = 'P' WHERE name = ?", (name,))
+    cur.execute("INSERT INTO token (name, available, used) VALUES (?, ?, ?)", (name, 0, 0))
+    con.commit()
+    con.close()
+
+def get_token(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT available FROM token WHERE name = ?", (name,))
+    result = cur.fetchone()
+    con.close()
+    return result[0] if result else 0
 
 if 'auth_stat' not in st.session_state:
     st.session_state['auth_stat'] = None
@@ -59,7 +88,7 @@ if 'name' not in st.session_state:
 if 'type' not in st.session_state:
     st.session_state['type'] = None
 
-st.set_page_config(page_title="LLM-Based Text Editor", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="LLM-Based Text Editor")
 set_db()
 
 page = get_page()
@@ -94,7 +123,7 @@ elif page == "signup":
     
     if st.button("Sign Up"):
         if name and password:
-            if add_user(name, 'free', password):
+            if add_user(name, 'F', password):
                 set_page("login")
             else:
                 st.error("Name already exists")
@@ -111,6 +140,15 @@ elif page == "main":
         st.title("📝 LLM-Based Text Editor")
         st.write(f"Hello, {st.session_state['name']}!")
         
+        if st.session_state['type'] == 'P':
+            token = get_token(st.session_state['name'])
+            st.write(f"Token: {token}")
+        else:
+            if st.button("Sign up as Paid User"):
+                free_to_paid(st.session_state['name'])
+                st.session_state['type'] = 'P'
+                set_page("main")
+        
         # Creates the text box and Stores user input in the variable
         user_input = st.text_area("Your text:", placeholder = "Start typing here...")
         LLM_instruction = "You are a grammar correction tool. Fix errors regarding grammar and spelling in the given text. Also fix punctuation such as missing periods. " \
@@ -123,58 +161,59 @@ elif page == "main":
 
         if st.button("Submit"):
             if user_input.strip():
-                response = ollama.chat(
-                    model = "mistral",
-                    messages = [
-                        {"role": "system", "content": LLM_instruction},
-                        {"role": "user", "content": user_input}
-                    ]
-                )
-                output = response['message']['content']
-                splitPut = output.split()
-                diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
-            
-                st.subheader("✅ Corrected Text:")
+                word_count = len(user_input.split())
+                if st.session_state['type'] == 'F' and word_count > 20:
+                    logout_user()
+                else:
+                    response = ollama.chat(
+                        model = "mistral",
+                        messages = [
+                            {"role": "system", "content": LLM_instruction},
+                            {"role": "user", "content": user_input}
+                        ]
+                    )
+                    output = response['message']['content']
+                    splitPut = output.split()
+                    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
+                
+                    st.subheader("✅ Corrected Text:")
 
-                html_content = ""
-                for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
-                    if status == 'equal':
-                        html_content += " ".join([
-                            f'''<span style="
+                    html_content = ""
+                    for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
+                        if status == 'equal':
+                            html_content += " ".join([
+                                f'''<span style="
+                                    font-family: 'IBM Plex Sans', sans-serif;
+                                    font-size: 16px; color: white;
+                                    vertical-align: middle;">{word}</span>'''
+                                for word in splitPut[cStart:cEnd]
+                            ]) + " "
+                        else:
+                            original_chunk = " ".join(user_input.split()[oStart:oEnd])
+                            corrected_chunk = " ".join(splitPut[cStart:cEnd])
+                            html_content += f'''
+                            <span onclick="toggleWord(this)" data-original="{original_chunk}"
+                            style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
                                 font-family: 'IBM Plex Sans', sans-serif;
                                 font-size: 16px; color: white;
-                                vertical-align: middle;">{word}</span>'''
-                            for word in splitPut[cStart:cEnd]
-                        ]) + " "
-                    else:
-                        original_chunk = " ".join(user_input.split()[oStart:oEnd])
-                        corrected_chunk = " ".join(splitPut[cStart:cEnd])
-                        html_content += f'''
-                        <span onclick="toggleWord(this)" data-original="{original_chunk}"
-                        style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
-                            font-family: 'IBM Plex Sans', sans-serif;
-                            font-size: 16px; color: white;
-                            vertical-align: middle;">
-                        {corrected_chunk}</span> '''
+                                vertical-align: middle;">
+                            {corrected_chunk}</span> '''
 
-                html_content += """
-                <script>
-                function toggleWord(el) {
-                    let original = el.getAttribute("data-original");
-                    let current = el.innerText;
-                    el.innerText = original;
-                    el.setAttribute("data-original", current);
-                    el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
-                }
-                </script>
-                """
+                    html_content += """
+                    <script>
+                    function toggleWord(el) {
+                        let original = el.getAttribute("data-original");
+                        let current = el.innerText;
+                        el.innerText = original;
+                        el.setAttribute("data-original", current);
+                        el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
+                    }
+                    </script>
+                    """
 
-                components.html(html_content, height=300, scrolling=True)
+                    components.html(html_content, height=300, scrolling=True)
 
             else: st.warning("Input can't be empty.")
         
         if st.button("Logout"):
-            st.session_state['auth_stat'] = None
-            st.session_state['name'] = None
-            st.session_state['type'] = None
-            set_page("login")
+            logout_user()
