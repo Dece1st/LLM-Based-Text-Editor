@@ -53,8 +53,7 @@ def search_user(name, password):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
     hash_password = hash_word(password)
-    cur.execute("SELECT type FROM account WHERE name = ? AND password = ?",
-             (name, hash_password))
+    cur.execute("SELECT type FROM account WHERE name = ? AND password = ?", (name, hash_password))
     result = cur.fetchone()
     con.close()
     return result[0] if result else None
@@ -76,10 +75,66 @@ def free_to_paid(name):
 def get_token(name):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("SELECT available FROM token WHERE name = ?", (name,))
+    cur.execute("SELECT available, used FROM token WHERE name = ?", (name,))
     result = cur.fetchone()
     con.close()
-    return result[0] if result else 0
+    return result if result else (0, 0)
+
+def update_token(name, available, used):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("UPDATE token SET available = available + ?, used = used + ? WHERE name = ?", (available, used, name))
+    con.commit()
+    con.close()
+
+def correct_text():
+    response = ollama.chat(
+        model = "mistral",
+        messages = [
+            {"role": "system", "content": LLM_instruction},
+            {"role": "user", "content": user_input}
+        ]
+    )
+    output = response['message']['content']
+    splitPut = output.split()
+    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
+
+    st.subheader("✅ Corrected Text:")
+
+    html_content = ""
+    for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
+        if status == 'equal':
+            html_content += " ".join([
+                f'''<span style="
+                    font-family: 'IBM Plex Sans', sans-serif;
+                    font-size: 16px; color: white;
+                    vertical-align: middle;">{word}</span>'''
+                for word in splitPut[cStart:cEnd]
+            ]) + " "
+        else:
+            original_chunk = " ".join(user_input.split()[oStart:oEnd])
+            corrected_chunk = " ".join(splitPut[cStart:cEnd])
+            html_content += f'''
+            <span onclick="toggleWord(this)" data-original="{original_chunk}"
+            style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
+                font-family: 'IBM Plex Sans', sans-serif;
+                font-size: 16px; color: white;
+                vertical-align: middle;">
+            {corrected_chunk}</span> '''
+
+    html_content += """
+    <script>
+    function toggleWord(el) {
+        let original = el.getAttribute("data-original");
+        let current = el.innerText;
+        el.innerText = original;
+        el.setAttribute("data-original", current);
+        el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
+    }
+    </script>
+    """
+
+    components.html(html_content, height=300, scrolling=True)
 
 if 'auth_stat' not in st.session_state:
     st.session_state['auth_stat'] = None
@@ -141,13 +196,18 @@ elif page == "main":
         st.write(f"Hello, {st.session_state['name']}!")
         
         if st.session_state['type'] == 'P':
-            token = get_token(st.session_state['name'])
-            st.write(f"Token: {token}")
+            available, used = get_token(st.session_state['name'])
+            st.write(f"Available Tokens: {available}")
+            st.write(f"Used Tokens: {used}")
+            token_input = st.number_input("Enter Tokens", min_value=1, step=1)
+            if st.button("Add Tokens"):
+                update_token(st.session_state['name'], token_input, 0)
+                st.rerun()
         else:
             if st.button("Sign up as Paid User"):
                 free_to_paid(st.session_state['name'])
                 st.session_state['type'] = 'P'
-                set_page("main")
+                st.rerun()
         
         # Creates the text box and Stores user input in the variable
         user_input = st.text_area("Your text:", placeholder = "Start typing here...")
@@ -162,58 +222,23 @@ elif page == "main":
         if st.button("Submit"):
             if user_input.strip():
                 word_count = len(user_input.split())
-                if st.session_state['type'] == 'F' and word_count > 20:
-                    logout_user()
-                else:
-                    response = ollama.chat(
-                        model = "mistral",
-                        messages = [
-                            {"role": "system", "content": LLM_instruction},
-                            {"role": "user", "content": user_input}
-                        ]
-                    )
-                    output = response['message']['content']
-                    splitPut = output.split()
-                    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
-                
-                    st.subheader("✅ Corrected Text:")
+                if st.session_state['type'] == 'F':
+                    if word_count > 20:
+                        logout_user()
+                    else:
+                        correct_text()
 
-                    html_content = ""
-                    for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
-                        if status == 'equal':
-                            html_content += " ".join([
-                                f'''<span style="
-                                    font-family: 'IBM Plex Sans', sans-serif;
-                                    font-size: 16px; color: white;
-                                    vertical-align: middle;">{word}</span>'''
-                                for word in splitPut[cStart:cEnd]
-                            ]) + " "
-                        else:
-                            original_chunk = " ".join(user_input.split()[oStart:oEnd])
-                            corrected_chunk = " ".join(splitPut[cStart:cEnd])
-                            html_content += f'''
-                            <span onclick="toggleWord(this)" data-original="{original_chunk}"
-                            style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
-                                font-family: 'IBM Plex Sans', sans-serif;
-                                font-size: 16px; color: white;
-                                vertical-align: middle;">
-                            {corrected_chunk}</span> '''
-
-                    html_content += """
-                    <script>
-                    function toggleWord(el) {
-                        let original = el.getAttribute("data-original");
-                        let current = el.innerText;
-                        el.innerText = original;
-                        el.setAttribute("data-original", current);
-                        el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
-                    }
-                    </script>
-                    """
-
-                    components.html(html_content, height=300, scrolling=True)
-
-            else: st.warning("Input can't be empty.")
+                elif st.session_state['type'] == 'P':
+                    available, used = get_token(st.session_state['name'])
+                    if available >= word_count:
+                        update_token(st.session_state['name'], -word_count, word_count)
+                        correct_text()
+                    else:
+                        penalty = available // 2
+                        update_token(st.session_state['name'], -penalty, penalty)
+                        st.rerun()
+            else:
+                st.warning("Input can't be empty.")
         
         if st.button("Logout"):
             logout_user()
