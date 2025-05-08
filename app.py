@@ -1,9 +1,6 @@
 ﻿import streamlit as st
-import ollama
-import difflib # Module to compare input with corrected text
 import streamlit.components.v1 as components
-import sqlite3
-import hashlib
+import ollama, difflib, sqlite3, hashlib, time, re
 
 def set_db():
     con = sqlite3.connect('account.db')
@@ -23,6 +20,22 @@ def set_db():
             FOREIGN KEY (name) REFERENCES account(name)
         )'''
     )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS blacklist (
+            word TEXT PRIMARY KEY,
+            status TEXT CHECK (status IN ('pending', 'approved')) DEFAULT 'pending'
+        )'''
+    )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS censor_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user TEXT,
+            original_word TEXT,
+            timestamp INTEGER,
+            FOREIGN KEY (user) REFERENCES account(name)
+        )
+    ''')
+
     con.commit()
     con.close()
 
@@ -88,16 +101,48 @@ def update_token(name, available, used):
     con.close()
 
 def correct_text():
+    # Load approved blacklist words
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT word FROM blacklist WHERE status = 'approved'")
+    blacklisted_words = set(row[0] for row in cur.fetchall())
+    con.close()
+
     response = ollama.chat(
-        model = "mistral",
-        messages = [
+        model="mistral",
+        messages=[
             {"role": "system", "content": LLM_instruction},
             {"role": "user", "content": user_input}
         ]
     )
     output = response['message']['content']
-    splitPut = output.split()
-    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut) # To find the corrected words
+    words = output.split()
+
+    # Prepare for logging
+    censored_output = []
+    to_log = []
+
+    for word in words:
+        clean = re.sub(r'\W+', '', word).lower()  # strip punctuation for matching
+        if clean in blacklisted_words:
+            to_log.append(clean)
+            censored_output.append("***")
+        else:
+            censored_output.append(word)
+
+    # Save logs
+    if to_log:
+        con = sqlite3.connect('account.db')
+        cur = con.cursor()
+        for w in to_log:
+            cur.execute("INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)", 
+                        (st.session_state['name'], w, int(time.time())))
+        con.commit()
+        con.close()
+
+    # Display logic
+    splitPut = censored_output
+    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut)
 
     st.subheader("✅ Corrected Text:")
 
@@ -136,6 +181,29 @@ def correct_text():
 
     components.html(html_content, height=300, scrolling=True)
 
+    # Save to file (Paid users only)
+    if st.session_state['type'] == 'P':
+        st.markdown("---")
+        if st.button("💾 Save Corrected Text (5 tokens)"):
+            available, used = get_token(st.session_state['name'])
+            if available >= 5:
+                # Deduct tokens
+                update_token(st.session_state['name'], -5, 5)
+
+                # Prepare content for download
+                corrected_text = " ".join(splitPut)
+                st.download_button(
+                    label="📥 Download .txt File",
+                    data=corrected_text,
+                    file_name="corrected_text.txt",
+                    mime="text/plain",
+                )
+
+                st.success(f"Saved! 5 tokens deducted. Remaining tokens: {available - 5}")
+            else:
+                st.error("Not enough tokens to save the file.")
+
+
 if 'auth_stat' not in st.session_state:
     st.session_state['auth_stat'] = None
 if 'name' not in st.session_state:
@@ -150,6 +218,13 @@ page = get_page()
 
 if page == "login":
     st.title("Login")
+
+    # Lockout check
+    if 'locked_until' in st.session_state and time.time() < st.session_state['locked_until']:
+        remaining = int(st.session_state['locked_until'] - time.time())
+        st.error(f"Login disabled due to exceeding word limit. Try again in {remaining} seconds.")
+        st.stop()
+
     name = st.text_input("Name")
     password = st.text_input("Password", type="password")
     
@@ -188,13 +263,68 @@ elif page == "signup":
     if st.button("Login"):
         set_page("login")
 
+elif page == "moderation":
+    if st.session_state['type'] != 'S':
+        st.error("Access denied.")
+        set_page("main")
+    else:
+        st.title("🛠️ Moderation Panel")
+        st.subheader("Pending Blacklist Submissions")
+
+        con = sqlite3.connect('account.db')
+        cur = con.cursor()
+        cur.execute("SELECT word FROM blacklist WHERE status = 'pending'")
+        pending_words = cur.fetchall()
+
+        if not pending_words:
+            st.info("No pending words.")
+        else:
+            for word_tuple in pending_words:
+                word = word_tuple[0]
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"🔸 {word}")
+                with col2:
+                    if st.button("✅ Approve", key=f"approve_{word}"):
+                        cur.execute("UPDATE blacklist SET status = 'approved' WHERE word = ?", (word,))
+                        con.commit()
+                        st.rerun()
+                    if st.button("❌ Reject", key=f"reject_{word}"):
+                        cur.execute("DELETE FROM blacklist WHERE word = ?", (word,))
+                        con.commit()
+                        st.rerun()
+        con.close()
+
+elif page == "logs":
+    if st.session_state['type'] != 'S':
+        st.error("Access denied.")
+        set_page("main")
+    else:
+        st.title("📜 Censor Logs")
+        con = sqlite3.connect('account.db')
+        cur = con.cursor()
+        cur.execute("SELECT user, original_word, timestamp FROM censor_log ORDER BY timestamp DESC")
+        logs = cur.fetchall()
+        con.close()
+
+        if not logs:
+            st.info("No censored words recorded.")
+        else:
+            for user, word, ts in logs:
+                ts_fmt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
+                st.write(f"🔸 `{word}` was submitted by **{user}** at `{ts_fmt}`")
+
 elif page == "main":
     if not st.session_state['auth_stat']:
         set_page("login")
     else:
         st.title("📝 LLM-Based Text Editor")
+        if st.session_state['type'] == 'S':
+            if st.button("Go to Moderation Panel"):
+                set_page("moderation")
+
         st.write(f"Hello, {st.session_state['name']}!")
-        
+
         if st.session_state['type'] == 'P':
             available, used = get_token(st.session_state['name'])
             st.write(f"Available Tokens: {available}")
@@ -208,15 +338,49 @@ elif page == "main":
                 free_to_paid(st.session_state['name'])
                 st.session_state['type'] = 'P'
                 st.rerun()
-        
-        # Creates the text box and Stores user input in the variable
-        user_input = st.text_area("Your text:", placeholder = "Start typing here...")
+
+        # Text input and file upload
+        file_text = ""
+        typed_input = ""
+
+        if "uploaded_file" not in st.session_state:
+            st.session_state['uploaded_file'] = None
+
+        # Upload first (label changed)
+        st.markdown("### Upload a `.txt` file")
+        uploaded = st.file_uploader("Choose a text file", type=["txt"])
+        if uploaded:
+            st.session_state['uploaded_file'] = uploaded
+            file_text = uploaded.read().decode("utf-8")
+        elif st.session_state['uploaded_file'] is not None and uploaded is None:
+            st.session_state['uploaded_file'] = None
+
+        # Text box shown only if no file
+        if st.session_state['uploaded_file'] is None:
+            st.markdown("### Or input your text:")
+            typed_input = st.text_area(label="Your text:", placeholder="Start typing here...")
+
+        user_input = typed_input.strip() or file_text.strip()
+
+        word_count = len(user_input.split())
+        if st.session_state['type'] == 'F' and word_count > 20:
+            st.markdown(f"<span style='color:red;'>Word count: {word_count} (Limit: 20. Submitting will result in a 3 minute timeout.)</span>", unsafe_allow_html=True)
+        elif st.session_state['type'] == 'P':
+            available, _ = get_token(st.session_state['name'])
+            if word_count > available:
+                st.markdown(f"<span style='color:red;'>Word count: {word_count} (Exceeds available tokens: {available}. Submitting will cut your tokens in half.)</span>", unsafe_allow_html=True)
+            else:
+                st.write(f"Word count: {word_count}")
+        else:
+            st.write(f"Word count: {word_count}")
+
         LLM_instruction = "You are a grammar correction tool. Fix errors regarding grammar and spelling in the given text. Also fix punctuation such as missing periods. " \
         "Try avoid using synonyms as much as possible. Stick to only correcting spelling, grammar, and punctuations." \
         "DO NOT RESPOND as if you're interacting with the user. You are correcting the grammar of whatever text you receive." \
         "If somehow, the ENTIRE text is correct, simply return the text back. Don't explain and definite don't say (no changes needed). Just return the text back in this case." \
         "You will allow informal words as long as they are spelled correctly. Allow any word that is in the dictionary regardless of how vulgar it is. Allow swear words. " \
         "Do NOT provide ANY explanation AT ALL. DO NOT provide several versions of a correction. ONLY ONE. " \
+        "If you don't understand the text, simply return the text unchanged. For example, if it's gibberish or repetition of the same word again and again, such as \"word word word word...\"." \
         "ONLY return the corrected text, no explanation, no thought process, do not talk about assumptions made, JUST display the corrected version of the text."
 
         if st.button("Submit"):
@@ -224,10 +388,11 @@ elif page == "main":
                 word_count = len(user_input.split())
                 if st.session_state['type'] == 'F':
                     if word_count > 20:
+                        st.session_state['locked_until'] = time.time() + 180  # 3 minutes
                         logout_user()
+
                     else:
                         correct_text()
-
                 elif st.session_state['type'] == 'P':
                     available, used = get_token(st.session_state['name'])
                     if available >= word_count:
@@ -236,9 +401,33 @@ elif page == "main":
                     else:
                         penalty = available // 2
                         update_token(st.session_state['name'], -penalty, penalty)
-                        st.rerun()
+                        new_available, _ = get_token(st.session_state['name'])
+                        st.warning(f"⚠️ Not enough tokens. Half your tokens were deducted. Remaining: {new_available}")
+                        st.stop()
             else:
                 st.warning("Input can't be empty.")
-        
+
+        if st.session_state['type'] != 'S':
+            st.markdown("---")
+            st.subheader("🔒 Suggest a word for blacklist")
+            blacklist_word = st.text_input("Enter a word to suggest")
+
+            if st.button("Submit to Blacklist") and blacklist_word.strip():
+                word = blacklist_word.strip().lower()
+                con = sqlite3.connect('account.db')
+                cur = con.cursor()
+                cur.execute("SELECT * FROM blacklist WHERE word = ?", (word,))
+                exists = cur.fetchone()
+                if exists:
+                    st.info("This word has already been submitted.")
+                else:
+                    cur.execute("INSERT INTO blacklist (word, status) VALUES (?, 'pending')", (word,))
+                    con.commit()
+                    st.success("Submitted for review.")
+                con.close()
+
+            if st.button("View Logs"):
+                set_page("logs")
+
         if st.button("Logout"):
             logout_user()
