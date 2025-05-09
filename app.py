@@ -49,6 +49,13 @@ def set_db():
             FOREIGN KEY (name) REFERENCES account(name)
         )'''
     )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS upgrade (
+            name TEXT PRIMARY KEY,
+            timestamp INTEGER,
+            FOREIGN KEY (name) REFERENCES account(name)
+        )'''
+    )
     con.commit()
     con.close()
 
@@ -105,6 +112,27 @@ def free_to_paid(name):
     con.commit()
     con.close()
 
+# Convert free user to super user (for testing)
+def free_to_super(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("UPDATE account SET type = 'S' WHERE name = ?", (name,))
+    con.commit()
+    con.close()
+
+# Submit free to paid user conversion request
+def request_free_to_paid(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    try:
+        cur.execute("INSERT INTO upgrade (name, timestamp) VALUES (?, ?)", (name, int(time.time())))
+        con.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        con.close()
+
 # Get token information from user account
 def get_token(name):
     con = sqlite3.connect('account.db')
@@ -121,15 +149,6 @@ def update_token(name, available, used):
     cur.execute("UPDATE token SET available = available + ?, used = used + ? WHERE name = ?", (available, used, name))
     con.commit()
     con.close()
-
-@st.fragment
-def render_download_button():
-    st.download_button(
-        label="📥 Download .txt File",
-        data=st.session_state["corrected_text"],
-        file_name="corrected_text.txt",
-        mime="text/plain"
-    )
 
 # Get lockout information for free user
 def get_lockout(name):
@@ -156,6 +175,15 @@ def remove_lockout(name):
     cur.execute("DELETE FROM lockout WHERE name = ?", (name,))
     con.commit()
     con.close()
+
+@st.fragment
+def render_download_button():
+    st.download_button(
+        label="📥 Download .txt File",
+        data=st.session_state["corrected_text"],
+        file_name="corrected_text.txt",
+        mime="text/plain"
+    )
 
 # LLM text correction
 def correct_text():
@@ -341,7 +369,32 @@ elif page == "moderation":
                         cur.execute("DELETE FROM blacklist WHERE word = ?", (word,))
                         con.commit()
                         st.rerun()
+        
+        st.subheader("Pending Paid User Requests")
+        cur.execute("SELECT name, timestamp FROM upgrade")
+        request = cur.fetchall()
+        if request:
+            for name, timestamp in request:
+                ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"🔸 User: {name} (Requested at: {ts})")
+                with col2:
+                    if st.button("✅ Approve", key=f"approve_{name}"):
+                        free_to_paid(name)
+                        cur.execute("DELETE FROM upgrade WHERE name = ?", (name,))
+                        con.commit()
+                        st.rerun()
+                    if st.button("❌ Decline", key=f"decline_{name}"):
+                        cur.execute("DELETE FROM upgrade WHERE name = ?", (name,))
+                        con.commit()
+                        st.rerun()
+        else:
+            st.info("No pending requests.")
         con.close()
+        
+        if st.button("Logout"):
+            logout_user()
 
 elif page == "logs":
     if st.session_state['type'] != 'S':
@@ -378,16 +431,26 @@ elif page == "main":
             st.write(f"Available Tokens: {available}")
             st.write(f"Used Tokens: {used}")
             token_input = st.number_input("Enter Tokens", min_value=1, step=1)
+            
             if st.button("Add Tokens"):
                 update_token(st.session_state['name'], token_input, 0)
                 st.rerun()
+        
         elif st.session_state['type'] == 'F':
             is_locked = get_lockout(st.session_state['name'])
             if is_locked:
                 remove_lockout(st.session_state['name'])
+            
             if st.button("Sign up as Paid User"):
-                free_to_paid(st.session_state['name'])
-                st.session_state['type'] = 'P'
+                if request_free_to_paid(st.session_state['name']):
+                    st.success("Request submitted. Awaiting super user approval.")
+                else:
+                    st.info("You have already submitted a request.")
+            
+            # Convert to super user (for testing, comment out for production)
+            if st.button("Test as Super User"):
+                free_to_super(st.session_state['name'])
+                st.session_state['type'] = 'S'
                 st.rerun()
 
         file_text = ""
