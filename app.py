@@ -101,108 +101,105 @@ def update_token(name, available, used):
     con.close()
 
 def correct_text():
-    # Load approved blacklist words
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("SELECT word FROM blacklist WHERE status = 'approved'")
-    blacklisted_words = set(row[0] for row in cur.fetchall())
-    con.close()
-
-    response = ollama.chat(
-        model="mistral",
-        messages=[
-            {"role": "system", "content": LLM_instruction},
-            {"role": "user", "content": user_input}
-        ]
-    )
-    output = response['message']['content']
-    words = output.split()
-
-    # Prepare for logging
-    censored_output = []
-    to_log = []
-
-    for word in words:
-        clean = re.sub(r'\W+', '', word).lower()  # strip punctuation for matching
-        if clean in blacklisted_words:
-            to_log.append(clean)
-            censored_output.append("***")
-        else:
-            censored_output.append(word)
-
-    # Save logs
-    if to_log:
+    try:
+        # Load approved blacklist words
         con = sqlite3.connect('account.db')
         cur = con.cursor()
-        for w in to_log:
-            cur.execute("INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)", 
-                        (st.session_state['name'], w, int(time.time())))
-        con.commit()
+        cur.execute("SELECT word FROM blacklist WHERE status = 'approved'")
+        blacklisted_words = set(row[0] for row in cur.fetchall())
         con.close()
 
-    # Display logic
-    splitPut = censored_output
-    diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut)
+        # Get user tokens
+        available, used = get_token(st.session_state['name'])
+        word_count = len(user_input.strip().split())
 
-    st.subheader("✅ Corrected Text:")
+        # Query LLM
+        response = ollama.chat(
+            model="mistral",
+            messages=[
+                {"role": "system", "content": LLM_instruction},
+                {"role": "user", "content": user_input}
+            ]
+        )
+        output = response['message']['content']
+        words = output.split()
 
-    html_content = ""
-    for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
-        if status == 'equal':
-            html_content += " ".join([
-                f'''<span style="
-                    font-family: 'IBM Plex Sans', sans-serif;
-                    font-size: 16px; color: white;
-                    vertical-align: middle;">{word}</span>'''
-                for word in splitPut[cStart:cEnd]
-            ]) + " "
-        else:
-            original_chunk = " ".join(user_input.split()[oStart:oEnd])
-            corrected_chunk = " ".join(splitPut[cStart:cEnd])
-            html_content += f'''
-            <span onclick="toggleWord(this)" data-original="{original_chunk}"
-            style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
-                font-family: 'IBM Plex Sans', sans-serif;
-                font-size: 16px; color: white;
-                vertical-align: middle;">
-            {corrected_chunk}</span> '''
+        # Deduct tokens after confirmed response
+        update_token(st.session_state['name'], -word_count, word_count)
 
-    html_content += """
-    <script>
-    function toggleWord(el) {
-        let original = el.getAttribute("data-original");
-        let current = el.innerText;
-        el.innerText = original;
-        el.setAttribute("data-original", current);
-        el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
-    }
-    </script>
-    """
-
-    components.html(html_content, height=300, scrolling=True)
-
-    # Save to file (Paid users only)
-    if st.session_state['type'] == 'P':
-        st.markdown("---")
-        if st.button("💾 Save Corrected Text (5 tokens)"):
-            available, used = get_token(st.session_state['name'])
-            if available >= 5:
-                # Deduct tokens
-                update_token(st.session_state['name'], -5, 5)
-
-                # Prepare content for download
-                corrected_text = " ".join(splitPut)
-                st.download_button(
-                    label="📥 Download .txt File",
-                    data=corrected_text,
-                    file_name="corrected_text.txt",
-                    mime="text/plain",
-                )
-
-                st.success(f"Saved! 5 tokens deducted. Remaining tokens: {available - 5}")
+        # Censoring
+        censored_output, to_log = [], []
+        for word in words:
+            clean = re.sub(r'\W+', '', word).lower()
+            if clean in blacklisted_words:
+                to_log.append(clean)
+                censored_output.append("***")
             else:
-                st.error("Not enough tokens to save the file.")
+                censored_output.append(word)
 
+        if to_log:
+            con = sqlite3.connect('account.db')
+            cur = con.cursor()
+            for w in to_log:
+                cur.execute("INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)",
+                            (st.session_state['name'], w, int(time.time())))
+            con.commit()
+            con.close()
+
+        # Display output
+        splitPut = censored_output
+        diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut)
+        st.subheader("✅ Corrected Text:")
+        html_content = ""
+        for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
+            if status == 'equal':
+                html_content += " ".join([
+                    f'''<span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; color: white; vertical-align: middle;">{word}</span>'''
+                    for word in splitPut[cStart:cEnd]
+                ]) + " "
+            else:
+                original_chunk = " ".join(user_input.split()[oStart:oEnd])
+                corrected_chunk = " ".join(splitPut[cStart:cEnd])
+                html_content += f'''
+                <span onclick="toggleWord(this)" data-original="{original_chunk}"
+                style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
+                    font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; color: white; vertical-align: middle;">
+                {corrected_chunk}</span> '''
+
+        html_content += """
+        <script>
+        function toggleWord(el) {
+            let original = el.getAttribute("data-original");
+            let current = el.innerText;
+            el.innerText = original;
+            el.setAttribute("data-original", current);
+            el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
+        }
+        </script>
+        """
+        components.html(html_content, height=300, scrolling=True)
+
+        # Save option still here
+        if st.session_state['type'] == 'P':
+            st.markdown("---")
+            if st.button("💾 Save Corrected Text (5 tokens)"):
+                available, used = get_token(st.session_state['name'])
+                if available >= 5:
+                    update_token(st.session_state['name'], -5, 5)
+                    corrected_text = " ".join(splitPut)
+                    st.download_button(
+                        label="📥 Download .txt File",
+                        data=corrected_text,
+                        file_name="corrected_text.txt",
+                        mime="text/plain",
+                    )
+                    st.success(f"Saved! 5 tokens deducted. Remaining tokens: {available - 5}")
+                else:
+                    st.error("Not enough tokens to save the file.")
+
+    except Exception as e:
+        st.error("❌ Failed to connect to the language model. Please try again.")
+        st.stop()
 
 if 'auth_stat' not in st.session_state:
     st.session_state['auth_stat'] = None
@@ -396,8 +393,7 @@ elif page == "main":
                 elif st.session_state['type'] == 'P':
                     available, used = get_token(st.session_state['name'])
                     if available >= word_count:
-                        update_token(st.session_state['name'], -word_count, word_count)
-                        correct_text()
+                        correct_text()  # Only call it, don't deduct tokens here
                     else:
                         penalty = available // 2
                         update_token(st.session_state['name'], -penalty, penalty)
