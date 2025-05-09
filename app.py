@@ -371,35 +371,43 @@ elif page == "main":
         else:
             st.write(f"Word count: {word_count}")
 
-        LLM_instruction = "You are a grammar correction tool. Fix errors regarding grammar and spelling in the given text. Also fix punctuation such as missing periods. " \
-        "Try avoid using synonyms as much as possible. Stick to only correcting spelling, grammar, and punctuations." \
-        "DO NOT RESPOND as if you're interacting with the user. You are correcting the grammar of whatever text you receive." \
-        "If somehow, the ENTIRE text is correct, simply return the text back. Don't explain and definite don't say (no changes needed). Just return the text back in this case." \
-        "You will allow informal words as long as they are spelled correctly. Allow any word that is in the dictionary regardless of how vulgar it is. Allow swear words. " \
-        "Do NOT provide ANY explanation AT ALL. DO NOT provide several versions of a correction. ONLY ONE. " \
-        "If you don't understand the text, simply return the text unchanged. For example, if it's gibberish or repetition of the same word again and again, such as \"word word word word...\"." \
-        "ONLY return the corrected text, no explanation, no thought process, do not talk about assumptions made, JUST display the corrected version of the text."
+        LLM_instruction = (
+            "Correct grammar, spelling, and punctuation only. "
+            "Do not explain, justify, or respond conversationally. "
+            "If text is already correct or unreadable, return it unchanged. "
+            "Allow slang and swear words if spelled correctly. "
+            "Output only the corrected text—no extra comments or options."
+        )
 
         if st.button("Submit"):
             if user_input.strip():
                 word_count = len(user_input.split())
-                if st.session_state['type'] == 'F':
-                    if word_count > 20:
-                        st.session_state['locked_until'] = time.time() + 180  # 3 minutes
-                        logout_user()
 
-                    else:
-                        correct_text()
-                elif st.session_state['type'] == 'P':
-                    available, used = get_token(st.session_state['name'])
-                    if available >= word_count:
-                        correct_text()  # Only call it, don't deduct tokens here
-                    else:
-                        penalty = available // 2
-                        update_token(st.session_state['name'], -penalty, penalty)
-                        new_available, _ = get_token(st.session_state['name'])
-                        st.warning(f"⚠️ Not enough tokens. Half your tokens were deducted. Remaining: {new_available}")
-                        st.stop()
+                # Apply instruction-like warning to all users
+                instruction_like = (
+                    re.search(r"(correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))", user_input.lower())
+                    and word_count < 25
+                )
+                if instruction_like:
+                    st.warning("⚠️ Your input looks like an instruction. If you're trying to correct a real sentence, rephrase it to avoid triggering unintended behavior.")
+                else:
+                    if st.session_state['type'] == 'F':
+                        if word_count > 20:
+                            st.session_state['locked_until'] = time.time() + 180  # 3 minutes
+                            logout_user()
+                        else:
+                            correct_text()
+
+                    elif st.session_state['type'] == 'P':
+                        available, used = get_token(st.session_state['name'])
+                        if available >= word_count:
+                            correct_text()
+                        else:
+                            penalty = available // 2
+                            update_token(st.session_state['name'], -penalty, penalty)
+                            new_available, _ = get_token(st.session_state['name'])
+                            st.warning(f"⚠️ Not enough tokens. Half your tokens were deducted. Remaining: {new_available}")
+                            st.stop()
             else:
                 st.warning("Input can't be empty.")
 
