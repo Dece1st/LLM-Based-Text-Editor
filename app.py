@@ -2,6 +2,12 @@
 import streamlit.components.v1 as components
 import ollama, difflib, sqlite3, hashlib, time, re
 
+st.set_page_config(page_title="LLM-Based Text Editor")
+
+# ✅ Initialize session state keys in one loop
+for key in ['auth_stat', 'name', 'type']:
+    st.session_state.setdefault(key, None)
+
 def set_db():
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -35,7 +41,6 @@ def set_db():
             FOREIGN KEY (user) REFERENCES account(name)
         )
     ''')
-
     con.commit()
     con.close()
 
@@ -100,8 +105,19 @@ def update_token(name, available, used):
     con.commit()
     con.close()
 
+@st.fragment
+def render_download_button():
+    st.download_button(
+        label="📥 Download .txt File",
+        data=st.session_state["corrected_text"],
+        file_name="corrected_text.txt",
+        mime="text/plain"
+    )
+
 def correct_text():
     try:
+        user_input = st.session_state["user_input"]
+
         # Load approved blacklist words
         con = sqlite3.connect('account.db')
         cur = con.cursor()
@@ -109,7 +125,7 @@ def correct_text():
         blacklisted_words = set(row[0] for row in cur.fetchall())
         con.close()
 
-        # Get user tokens
+        # Get token usage
         available, used = get_token(st.session_state['name'])
         word_count = len(user_input.strip().split())
 
@@ -124,7 +140,7 @@ def correct_text():
         output = response['message']['content']
         words = output.split()
 
-        # Deduct tokens after confirmed response
+        # Deduct tokens
         update_token(st.session_state['name'], -word_count, word_count)
 
         # Censoring
@@ -146,69 +162,60 @@ def correct_text():
             con.commit()
             con.close()
 
-        # Display output
-        splitPut = censored_output
-        diff = difflib.SequenceMatcher(None, user_input.strip().split(), splitPut)
-        st.subheader("✅ Corrected Text:")
-        html_content = ""
-        for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
-            if status == 'equal':
-                html_content += " ".join([
-                    f'''<span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; color: white; vertical-align: middle;">{word}</span>'''
-                    for word in splitPut[cStart:cEnd]
-                ]) + " "
-            else:
-                original_chunk = " ".join(user_input.split()[oStart:oEnd])
-                corrected_chunk = " ".join(splitPut[cStart:cEnd])
-                html_content += f'''
-                <span onclick="toggleWord(this)" data-original="{original_chunk}"
-                style="background-color: limegreen; border-radius: 8px; padding: 4px 4px 2px 4px; display: inline-block; cursor: pointer;
-                    font-family: 'IBM Plex Sans', sans-serif; font-size: 16px; color: white; vertical-align: middle;">
-                {corrected_chunk}</span> '''
+        # Save initial version for comparison
+        st.session_state["corrected_text"] = " ".join(censored_output)
 
-        html_content += """
+        # Build HTML with toggle + locking logic
+        diff = difflib.SequenceMatcher(None, user_input.strip().split(), censored_output)
+        html_content = """
         <script>
+        let editingLocked = false;
+
         function toggleWord(el) {
+            if (editingLocked) return;
             let original = el.getAttribute("data-original");
             let current = el.innerText;
             el.innerText = original;
             el.setAttribute("data-original", current);
             el.style.backgroundColor = (el.style.backgroundColor === "limegreen") ? "orangered" : "limegreen";
         }
+
+        function prepareDownloadText() {
+            const spans = Array.from(document.querySelectorAll("span[data-original]"));
+            const collected = spans.map(s => s.innerText).join(" ");
+            const input = window.parent.document.querySelector('input[data-baseweb="input"]');
+            if (input) {
+                input.value = collected;
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+            editingLocked = true;
+        }
         </script>
+        <div>
         """
-        components.html(html_content, height=300, scrolling=True)
 
-        # Save option still here
-        if st.session_state['type'] == 'P':
-            st.markdown("---")
-            if st.button("💾 Save Corrected Text (5 tokens)"):
-                available, used = get_token(st.session_state['name'])
-                if available >= 5:
-                    update_token(st.session_state['name'], -5, 5)
-                    corrected_text = " ".join(splitPut)
-                    st.download_button(
-                        label="📥 Download .txt File",
-                        data=corrected_text,
-                        file_name="corrected_text.txt",
-                        mime="text/plain",
-                    )
-                    st.success(f"Saved! 5 tokens deducted. Remaining tokens: {available - 5}")
-                else:
-                    st.error("Not enough tokens to save the file.")
+        for status, oStart, oEnd, cStart, cEnd in diff.get_opcodes():
+            if status == 'equal':
+                html_content += " ".join([
+                    f"<span style='font-size: 16px; color: white;'>{word}</span>"
+                    for word in censored_output[cStart:cEnd]
+                ]) + " "
+            else:
+                original = " ".join(user_input.split()[oStart:oEnd])
+                corrected = " ".join(censored_output[cStart:cEnd])
+                html_content += f"""
+                <span onclick="toggleWord(this)" data-original="{original}"
+                style="background-color: limegreen; border-radius: 8px; padding: 4px; display: inline-block; cursor: pointer;
+                font-size: 16px; color: white;">
+                {corrected}</span> """
 
-    except Exception as e:
+        html_content += "</div><script>window.renderedOnce = true;</script>"
+        st.session_state["rendered_html"] = html_content
+        st.session_state["can_download"] = False  # Reset flag
+    except Exception:
         st.error("❌ Failed to connect to the language model. Please try again.")
         st.stop()
 
-if 'auth_stat' not in st.session_state:
-    st.session_state['auth_stat'] = None
-if 'name' not in st.session_state:
-    st.session_state['name'] = None
-if 'type' not in st.session_state:
-    st.session_state['type'] = None
-
-st.set_page_config(page_title="LLM-Based Text Editor")
 set_db()
 
 page = get_page()
@@ -336,14 +343,12 @@ elif page == "main":
                 st.session_state['type'] = 'P'
                 st.rerun()
 
-        # Text input and file upload
         file_text = ""
         typed_input = ""
 
         if "uploaded_file" not in st.session_state:
             st.session_state['uploaded_file'] = None
 
-        # Upload first (label changed)
         st.markdown("### Upload a `.txt` file")
         uploaded = st.file_uploader("Choose a text file", type=["txt"])
         if uploaded:
@@ -352,7 +357,6 @@ elif page == "main":
         elif st.session_state['uploaded_file'] is not None and uploaded is None:
             st.session_state['uploaded_file'] = None
 
-        # Text box shown only if no file
         if st.session_state['uploaded_file'] is None:
             st.markdown("### Or input your text:")
             typed_input = st.text_area(label="Your text:", placeholder="Start typing here...")
@@ -382,8 +386,6 @@ elif page == "main":
         if st.button("Submit"):
             if user_input.strip():
                 word_count = len(user_input.split())
-
-                # Apply instruction-like warning to all users
                 instruction_like = (
                     re.search(r"(correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))", user_input.lower())
                     and word_count < 25
@@ -393,14 +395,15 @@ elif page == "main":
                 else:
                     if st.session_state['type'] == 'F':
                         if word_count > 20:
-                            st.session_state['locked_until'] = time.time() + 180  # 3 minutes
+                            st.session_state['locked_until'] = time.time() + 180
                             logout_user()
                         else:
+                            st.session_state["user_input"] = user_input
                             correct_text()
-
                     elif st.session_state['type'] == 'P':
                         available, used = get_token(st.session_state['name'])
                         if available >= word_count:
+                            st.session_state["user_input"] = user_input
                             correct_text()
                         else:
                             penalty = available // 2
@@ -410,6 +413,33 @@ elif page == "main":
                             st.stop()
             else:
                 st.warning("Input can't be empty.")
+
+        if st.session_state.get("corrected_text"):
+            st.subheader("✅ Corrected Text:")
+            components.html(st.session_state["rendered_html"], height=300, scrolling=True)
+
+            # Hidden input (true HTML hidden field, not Streamlit input)
+            st.markdown('<input type="hidden" id="hidden_download_text" name="hidden_download_text">', unsafe_allow_html=True)
+
+        if not st.session_state.get("can_download"):
+            st.markdown("---")
+            st.markdown("⚠️ After pressing this, edits will be locked.", unsafe_allow_html=True)
+            if st.button("💾 Prepare for Download (5 tokens)"):
+                available, _ = get_token(st.session_state['name'])
+                if available >= 5:
+                    update_token(st.session_state['name'], -5, 5)
+                    st.session_state["can_download"] = True
+                    st.success(f"File ready! 5 tokens deducted. Remaining tokens: {available - 5}")
+                else:
+                    st.error("Not enough tokens to save the file.")
+
+        if st.session_state.get("can_download"):
+            st.download_button(
+                "📥 Download .txt File",
+                st.session_state["corrected_text"],
+                file_name="corrected_text.txt",
+                mime="text/plain"
+            )
 
         if st.session_state['type'] != 'S':
             st.markdown("---")
