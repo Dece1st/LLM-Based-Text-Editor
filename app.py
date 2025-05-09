@@ -8,6 +8,7 @@ st.set_page_config(page_title="LLM-Based Text Editor")
 for key in ['auth_stat', 'name', 'type']:
     st.session_state.setdefault(key, None)
 
+# Set up database
 def set_db():
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -41,19 +42,30 @@ def set_db():
             FOREIGN KEY (user) REFERENCES account(name)
         )
     ''')
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS lockout (
+            name TEXT PRIMARY KEY,
+            time INTEGER DEFAULT 0,
+            FOREIGN KEY (name) REFERENCES account(name)
+        )'''
+    )
     con.commit()
     con.close()
 
+# Load login page
 def get_page():
     return st.query_params.get("page", "login")
 
+# Redirect to specified page
 def set_page(page):
     st.query_params["page"] = page
     st.rerun()
 
+# Hash user password
 def hash_word(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Add user name and password to database
 def add_user(name, type, password):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -67,6 +79,7 @@ def add_user(name, type, password):
     finally:
         con.close()
 
+# Check if user is already registered
 def search_user(name, password):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -76,12 +89,14 @@ def search_user(name, password):
     con.close()
     return result[0] if result else None
 
+# Logout user session and redirect to login page
 def logout_user():
     st.session_state['auth_stat'] = None
     st.session_state['name'] = None
     st.session_state['type'] = None
     set_page("login")
 
+# Convert free user to paid user
 def free_to_paid(name):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -90,6 +105,7 @@ def free_to_paid(name):
     con.commit()
     con.close()
 
+# Get token information from user account
 def get_token(name):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -98,6 +114,7 @@ def get_token(name):
     con.close()
     return result if result else (0, 0)
 
+# Update token to user account
 def update_token(name, available, used):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
@@ -114,6 +131,33 @@ def render_download_button():
         mime="text/plain"
     )
 
+# Get lockout information for free user
+def get_lockout(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT time FROM lockout WHERE name = ?", (name,))
+    result = cur.fetchone()
+    return result[0] if result else 0
+    con.close()
+
+# Update lockout for free user
+def set_lockout(name, duration):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    lock_time = int(time.time()) + duration
+    cur.execute("INSERT INTO lockout (name, time) VALUES (?, ?)", (name, lock_time))
+    con.commit()
+    con.close()
+
+# Remove lockout for free user
+def remove_lockout(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("DELETE FROM lockout WHERE name = ?", (name,))
+    con.commit()
+    con.close()
+
+# LLM text correction
 def correct_text():
     try:
         user_input = st.session_state["user_input"]
@@ -222,15 +266,15 @@ page = get_page()
 
 if page == "login":
     st.title("Login")
-
-    # Lockout check
-    if 'locked_until' in st.session_state and time.time() < st.session_state['locked_until']:
-        remaining = int(st.session_state['locked_until'] - time.time())
-        st.error(f"Login disabled due to exceeding word limit. Try again in {remaining} seconds.")
-        st.stop()
-
     name = st.text_input("Name")
     password = st.text_input("Password", type="password")
+
+    # Lockout check
+    lock_time = get_lockout(name)
+    if lock_time > int(time.time()):
+        remaining = lock_time - int(time.time())
+        st.error(f"Account locked due to exceeding word limit. Try again in {remaining} seconds.")
+        st.stop()
     
     if st.button("Login"):
         type = search_user(name, password)
@@ -337,7 +381,10 @@ elif page == "main":
             if st.button("Add Tokens"):
                 update_token(st.session_state['name'], token_input, 0)
                 st.rerun()
-        else:
+        elif st.session_state['type'] == 'F':
+            is_locked = get_lockout(st.session_state['name'])
+            if is_locked:
+                remove_lockout(st.session_state['name'])
             if st.button("Sign up as Paid User"):
                 free_to_paid(st.session_state['name'])
                 st.session_state['type'] = 'P'
@@ -395,7 +442,7 @@ elif page == "main":
                 else:
                     if st.session_state['type'] == 'F':
                         if word_count > 20:
-                            st.session_state['locked_until'] = time.time() + 180
+                            set_lockout(st.session_state['name'], 180)
                             logout_user()
                         else:
                             st.session_state["user_input"] = user_input
