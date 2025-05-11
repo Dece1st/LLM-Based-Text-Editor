@@ -22,8 +22,13 @@ page = get_page()
 
 if page == "login":
     st.title("Login")
-    name = st.text_input("Name")
-    password = st.text_input("Password", type="password")
+
+    with st.form("login_fom"):
+        name = st.text_input("Name")
+        password = st.text_input("Password", type="password")
+
+        submitted_login = st.form_submit_button("Login")
+        submitted_signup = st.form_submit_button("Sign Up")
 
     # Lockout check
     lock_time = get_lockout(name)
@@ -32,7 +37,7 @@ if page == "login":
         st.error(f"Account locked due to exceeding word limit. Try again in {remaining} seconds.")
         st.stop()
     
-    if st.button("Login"):
+    if submitted_login:
         type = search_user(name, password)
         if type:
             st.session_state['auth_stat'] = True
@@ -41,30 +46,36 @@ if page == "login":
             set_page("main")
         else:
             st.session_state['auth_stat'] = False
+            st.error("Incorrect username or password")
     
-    if st.button("Sign Up"):
+    if submitted_signup:
         set_page("signup")
     
-    if st.session_state['auth_stat'] == False:
-        st.error("Incorrect name/password")
-    elif st.session_state['auth_stat'] is None:
+    if st.session_state['auth_stat'] is None:
         st.warning("Please enter name and password")
 
 elif page == "signup":
     st.title("Sign Up")
-    name = st.text_input("Name")
-    password = st.text_input("Password", type="password")
-    
-    if st.button("Sign Up"):
+
+    # Signup form
+    with st.form("signup_form"):
+        name = st.text_input("Name")
+        password = st.text_input("Password", type="password")
+
+        submitted_signup = st.form_submit_button("Sign Up")
+        submitted_login = st.form_submit_button("Login")
+
+    if submitted_signup:
         if name and password:
             if add_user(name, 'F', password):
+                st.success("Signup successful! Redirecting to login...")
                 set_page("login")
             else:
                 st.error("Name already exists")
         else:
             st.error("Please fill in all fields")
-    
-    if st.button("Login"):
+
+    if submitted_login:
         set_page("login")
 
 elif page == "moderation":
