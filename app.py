@@ -219,8 +219,14 @@ elif page == "main":
 
         if st.session_state['type'] == 'P':
             available, used = get_token(st.session_state['name'])
-            st.write(f"Available Tokens: {available}")
-            st.write(f"Used Tokens: {used}")
+            corrections = count_correction(st.session_state['name'])
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Available Tokens", available)
+            with col2:
+                st.metric("Used Tokens", used)
+            with col3:
+                st.metric("Corrections", corrections)
             token_input = st.number_input("Enter Tokens", min_value=1, step=1)
             
             if st.button("Add Tokens"):

@@ -205,6 +205,15 @@ def set_submission(user, original, corrected, error):
     con.commit()
     con.close()
 
+# Count the number of correction for paid user
+def count_correction(name):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM submission WHERE user = ?", (name,))
+    count = cur.fetchone()[0]
+    con.close()
+    return count
+
 _PUNCT_MAP = {
     # quotes
     '\u2018': "'",  # left single quotation mark
