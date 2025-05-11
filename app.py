@@ -395,7 +395,7 @@ elif page == "main":
                         available, _ = get_token(st.session_state['name'])
                         if available >= 5:
                             update_token(st.session_state['name'], -5, 5)
-                            st.session_state["downloaded_success"] = f"Downloaded! 5 tokens deducted. Remaining: {available - 5}"
+                            st.session_state["downloaded_success"] = f"File downloaded. 5 tokens deducted. Remaining: {available - 5}"
                             st.session_state["can_download"] = False
                             st.session_state["rendered_html"] = None
                             st.session_state["corrected_text"] = None
