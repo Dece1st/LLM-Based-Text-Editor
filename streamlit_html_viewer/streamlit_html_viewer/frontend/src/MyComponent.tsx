@@ -21,7 +21,7 @@ function MyComponent(props: ComponentProps) {
       const corr = tgt.dataset.corrected!
       const now  = tgt.textContent === orig ? corr : orig
       tgt.textContent = now
-      tgt.style.background = now === corr ? "limegreen" : "red"
+      tgt.style.background = now === corr ? "#2EBD2E" : "#DB0000"
 
       // send updated HTML back to Python immediately
       const updated = document.getElementById("content")!.innerHTML

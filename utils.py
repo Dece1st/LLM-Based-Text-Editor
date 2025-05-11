@@ -211,7 +211,7 @@ def correct_text(user_input):
         con = sqlite3.connect('account.db')
         cur = con.cursor()
         cur.execute("SELECT word FROM blacklist WHERE status = 'approved'")
-        blacklisted_words = {row[0] for row in cur.fetchall()}
+        blacklisted = {row[0] for row in cur.fetchall()}
         con.close()
 
         # Token use
@@ -227,16 +227,14 @@ def correct_text(user_input):
             "Output only the corrected text—no extra comments or options."
             "Please preserve the original paragraph breaks. In your output, separate each paragraph with a blank line."
         )
-        
-        response = ollama.chat(
+        resp = ollama.chat(
             model="mistral",
             messages=[
                 {"role": "system", "content": LLM_instruction},
-                {"role": "user", "content": user_input}
+                {"role": "user",   "content": user_input}
             ]
         )
-        output = response['message']['content']
-        words = output.split()
+        output = resp['message']['content']
         
         if st.session_state['type'] == 'P':
             # Deduct tokens for submission
@@ -249,22 +247,48 @@ def correct_text(user_input):
                 update_token(st.session_state['name'], 3, 0)
                 st.success("No error found. Awarded 3 bonus tokens.")
 
-        # Censoring
-        censored_output = []
-        to_log = []
-        for w in words:
-            clean = re.sub(r'\W+', '', w).lower()
-            if clean in blacklisted_words:
-                to_log.append(clean)
-                censored_output.append("***")
-            else:
-                censored_output.append(w)
+        # Prepare for diffing
+        orig_paras = user_input.strip().split("\n\n")
+        corr_paras = output.strip().split("\n\n")
 
-        # Log censored words
+        html = ""
+        to_log = []
+        for orig_para, corr_para in zip(orig_paras, corr_paras):
+            orig_lines = orig_para.splitlines()
+            corr_lines = corr_para.splitlines()
+            for o_line, c_line in zip(orig_lines, corr_lines):
+                o_words = o_line.split()
+                c_words = c_line.split()
+                diff = difflib.SequenceMatcher(None, o_words, c_words)
+                for tag, o1, o2, c1, c2 in diff.get_opcodes():
+                    if tag == 'equal':
+                        html += " ".join(c_words[c1:c2]) + " "
+                    else:
+                        segment = " ".join(c_words[c1:c2])
+                        original = " ".join(o_words[o1:o2])
+                        # log blacklisted
+                        for w in c_words[c1:c2]:
+                            clean = re.sub(r'\W+', '', w).lower()
+                            if clean in blacklisted:
+                                to_log.append(clean)
+                                segment = segment.replace(w, "***")
+                        html += (
+                            f'<span class="toggle" '
+                            f'data-original="{original}" '
+                            f'data-corrected="{segment}" '
+                            f'style="background:#2EBD2E; border-radius:8px; '
+                            f'padding:4px; display:inline-block; cursor:pointer; '
+                            f'font-size:16px; color:white;">'
+                            f'{segment}</span> '
+                        )
+                html += "<br>"
+            html += "<br>"
+
+        # Log any censored words
         if to_log:
             con = sqlite3.connect('account.db')
             cur = con.cursor()
-            for w in to_log:
+            for w in set(to_log):
                 cur.execute(
                     "INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)",
                     (st.session_state['name'], w, int(time.time()))
@@ -272,36 +296,13 @@ def correct_text(user_input):
             con.commit()
             con.close()
 
-        # Save raw corrected text
-        st.session_state["corrected_text"] = " ".join(censored_output)
-
-        # Build HTML for the custom component
-        diff = difflib.SequenceMatcher(
-            None,
-            user_input.strip().split(),
-            censored_output
-        )
-        html_content = "<div>"
-        for tag, o1, o2, c1, c2 in diff.get_opcodes():
-            if tag == 'equal':
-                for w in censored_output[c1:c2]:
-                    html_content += f"{w} "
-            else:
-                original = " ".join(user_input.strip().split()[o1:o2])
-                corrected = " ".join(censored_output[c1:c2])
-                html_content += (
-                    f"<span class=\"toggle\" "
-                    f"data-original=\"{original}\" "
-                    f"data-corrected=\"{corrected}\" "
-                    f"style=\"background:limegreen; border-radius:8px; "
-                    f"padding:4px; display:inline-block; cursor:pointer; "
-                    f"font-size:16px; color:white;\">"
-                    f"{corrected}</span> "
-                )
-        html_content += "</div>"
-
-        # Store for rendering
-        st.session_state["rendered_html"] = html_content
+        # Save into session
+        html = re.sub(r'(<br>\s*)+$', '', html)
+        st.session_state["rendered_html"] = f"<div>{html}</div>"
+        # Build plain text preserving paragraphs
+        plain = output.split("\n\n")
+        joined = "\n\n".join(plain)
+        st.session_state["corrected_text"] = joined
         st.session_state["can_download"] = False
 
     except Exception:

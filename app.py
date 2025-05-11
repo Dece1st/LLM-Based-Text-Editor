@@ -4,6 +4,17 @@ from utils import *
 
 st.set_page_config(page_title="LLM-Based Text Editor")
 
+st.markdown(
+    """
+    <style>
+      label[data-testid="stWidgetLabel"][disabled] {
+        display: none !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # Initialize session state keys
 for key in ['auth_stat', 'name', 'type', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
     st.session_state.setdefault(key, None)
@@ -301,8 +312,47 @@ elif page == "main":
 
             if st.session_state.get("rendered_html") and not st.session_state.get("can_download"):
                 st.subheader("✅ Corrected Text")
+
+                raw = st.session_state["rendered_html"]
+                css = """
+                <style>
+                .scrollable {
+                    background-color: #262730;
+                    border: 1px solid #1D751D;
+                    border-radius: 8px;
+                    padding: 8px;
+                    max-height: 300px;
+                    overflow-y: auto;
+                    user-select: none;          /* disable text selection */
+                }
+                /* Chrome, Edge, Safari */
+                .scrollable::-webkit-scrollbar {
+                    width: 6px;
+                }
+                .scrollable::-webkit-scrollbar-track {
+                    background: #262730;
+                    border-radius: 3px;
+                }
+                .scrollable::-webkit-scrollbar-thumb {
+                    background-color: #7B7B81;
+                    border-radius: 3px;
+                }
+                /* Firefox */
+                .scrollable {
+                    scrollbar-width: thin;
+                    scrollbar-color: #7B7B81 #262730;
+                }
+                </style>
+                """
+                wrapped = f"""
+                {css}
+                <div class="scrollable">
+                {raw}
+                </div>
+                """
+
                 edited = html_viewer(
-                    html=st.session_state["rendered_html"],
+                    html=wrapped,
                     height=300
                 )
                 if edited is not None:
@@ -310,7 +360,6 @@ elif page == "main":
 
             if st.session_state['type'] == 'P':
                 if st.session_state.get("corrected_text") and not st.session_state.get("can_download"):
-                    st.markdown("---")
                     st.markdown(
                         "⚠️ After pressing this, edits will be locked.",
                         unsafe_allow_html=True
@@ -327,11 +376,16 @@ elif page == "main":
 
                 if st.session_state.get("can_download"):
                     st.markdown("### 📄 Preview of Approved Edits")
+
                     html_data = st.session_state["corrected_text"]
-                    html_data = html_data.replace("</div><div", "</div>\n\n<div")
+                    html_data = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
+                    html_data = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html_data)
+                    html_data = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html_data)
+                    html_data = re.sub(r"<br\s*/?>", "\n", html_data)
                     text_only = re.sub(r"<[^>]+>", "", html_data)
-                    lines = [ " ".join(line.split()) for line in text_only.splitlines() ]
+                    lines = [" ".join(line.split()) for line in text_only.splitlines()]
                     clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
+
                     st.text_area("", clean_text, height=200, disabled=True)
                     st.download_button(
                         label="📥 Download edits",
