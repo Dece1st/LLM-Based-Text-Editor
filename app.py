@@ -253,7 +253,7 @@ elif page == "main":
             st.session_state['uploaded_file'] = None
 
         if st.session_state['type'] != 'S':
-            st.markdown("### Upload a `.txt` file")
+            st.markdown("### 📤 Upload a `.txt` file")
             uploaded = st.file_uploader("Choose a text file", type=["txt"])
             if uploaded:
                 st.session_state['uploaded_file'] = uploaded
@@ -262,7 +262,7 @@ elif page == "main":
                 st.session_state['uploaded_file'] = None
 
             if st.session_state['uploaded_file'] is None:
-                st.markdown("### Or input your text:")
+                st.markdown("### 💻 Or input your text:")
                 typed_input = st.text_area(label="Your text:", placeholder="Start typing here...", height=170)
 
             user_input = (typed_input or file_text).rstrip()
@@ -309,6 +309,10 @@ elif page == "main":
                                 st.stop()
                 else:
                     st.warning("Input can't be empty.")
+
+            if st.session_state.get("downloaded_success"):
+                st.success(st.session_state["downloaded_success"])
+                del st.session_state["downloaded_success"]
 
             if st.session_state.get("rendered_html") and not st.session_state.get("can_download"):
                 st.subheader("✅ Corrected Text")
@@ -360,19 +364,13 @@ elif page == "main":
 
             if st.session_state['type'] == 'P':
                 if st.session_state.get("corrected_text") and not st.session_state.get("can_download"):
+                    if st.button("🔒 Confirm Edits"):
+                        st.session_state["can_download"] = True
+                        st.rerun()
                     st.markdown(
-                        "⚠️ After pressing this, edits will be locked.",
+                        "⚠️ Pressing this will lock further edits.",
                         unsafe_allow_html=True
                     )
-                    if st.button("💾 Prepare for Download (5 tokens)"):
-                        available, _ = get_token(st.session_state['name'])
-                        if available >= 5:
-                            update_token(st.session_state['name'], -5, 5)
-                            st.session_state["can_download"] = True
-                            st.success(f"File ready! 5 tokens deducted. Remaining: {available - 5}")
-                            st.rerun()
-                        else:
-                            st.error("Not enough tokens to save the file.")
 
                 if st.session_state.get("can_download"):
                     st.markdown("### 📄 Preview of Approved Edits")
@@ -387,15 +385,26 @@ elif page == "main":
                     clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
 
                     st.text_area("", clean_text, height=200, disabled=True)
-                    st.download_button(
-                        label="📥 Download edits",
+
+                    if st.download_button(
+                        label="📥 Download .txt File (5 Tokens)",
                         data=clean_text,
                         file_name="corrected_text.txt",
                         mime="text/plain",
-                    )
+                    ):
+                        available, _ = get_token(st.session_state['name'])
+                        if available >= 5:
+                            update_token(st.session_state['name'], -5, 5)
+                            st.session_state["downloaded_success"] = f"Downloaded! 5 tokens deducted. Remaining: {available - 5}"
+                            st.session_state["can_download"] = False
+                            st.session_state["rendered_html"] = None
+                            st.session_state["corrected_text"] = None
+                            st.rerun()
+                        else:
+                            st.error("Not enough tokens to download the file.")
 
             st.markdown("---")
-            st.subheader("🔒 Suggest a word for blacklist")
+            st.subheader("🚫 Suggest a word for blacklist")
             blacklist_word = st.text_input("Enter a word to suggest")
 
             if st.button("Submit to Blacklist"):
