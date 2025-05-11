@@ -8,17 +8,17 @@ def set_db():
     cur = con.cursor()
     cur.execute('''
         CREATE TABLE IF NOT EXISTS account (
-            name TEXT PRIMARY KEY,
+            client_id TEXT PRIMARY KEY,
             password TEXT,
             type TEXT DEFAULT 'F'
         )'''
     )
     cur.execute('''
         CREATE TABLE IF NOT EXISTS token (
-            name TEXT PRIMARY KEY,
+            client_id TEXT PRIMARY KEY,
             available INTEGER DEFAULT 0,
             used INTEGER DEFAULT 0,
-            FOREIGN KEY (name) REFERENCES account(name)
+            FOREIGN KEY (client_id) REFERENCES account(client_id)
         )'''
     )
     cur.execute('''
@@ -33,21 +33,13 @@ def set_db():
             user TEXT,
             original_word TEXT,
             timestamp INTEGER,
-            FOREIGN KEY (user) REFERENCES account(name)
+            FOREIGN KEY (user) REFERENCES account(client_id)
         )
     ''')
     cur.execute('''
         CREATE TABLE IF NOT EXISTS lockout (
-            name TEXT PRIMARY KEY,
-            time INTEGER DEFAULT 0,
-            FOREIGN KEY (name) REFERENCES account(name)
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS upgrade (
-            name TEXT PRIMARY KEY,
-            timestamp INTEGER,
-            FOREIGN KEY (name) REFERENCES account(name)
+            client_id TEXT PRIMARY KEY,
+            time      INTEGER DEFAULT 0
         )'''
     )
     cur.execute('''
@@ -58,9 +50,16 @@ def set_db():
             corrected TEXT,
             error INTEGER,
             timestamp INTEGER,
-            FOREIGN KEY (user) REFERENCES account(name)
+            FOREIGN KEY (user) REFERENCES account(client_id)
         )'''
     )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS upgrade (
+            client_id TEXT PRIMARY KEY,
+            timestamp INTEGER,
+            FOREIGN KEY (client_id) REFERENCES account(client_id)
+        )
+    ''')
     con.commit()
     con.close()
 
@@ -77,13 +76,13 @@ def set_page(page):
 def hash_word(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Add user name and password to database
-def add_user(name, type, password):
+# Add user client_id and password to database
+def add_user(client_id, type, password):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
     hash_password = hash_word(password)
     try:
-        cur.execute("INSERT INTO account (name, password, type) VALUES (?, ?, ?)", (name, hash_password, type))
+        cur.execute("INSERT INTO account (client_id, password, type) VALUES (?, ?, ?)", (client_id, hash_password, type))
         con.commit()
         return True
     except sqlite3.IntegrityError:
@@ -92,11 +91,11 @@ def add_user(name, type, password):
         con.close()
 
 # Check if user is already registered
-def search_user(name, password):
+def search_user(client_id, password):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
     hash_password = hash_word(password)
-    cur.execute("SELECT type FROM account WHERE name = ? AND password = ?", (name, hash_password))
+    cur.execute("SELECT type FROM account WHERE client_id = ? AND password = ?", (client_id, hash_password))
     result = cur.fetchone()
     con.close()
     return result[0] if result else None
@@ -104,7 +103,7 @@ def search_user(name, password):
 # Logout user session and redirect to login page
 def logout_user():
     st.session_state['auth_stat'] = None
-    st.session_state['name'] = None
+    st.session_state['client_id'] = None
     st.session_state['type'] = None
     st.session_state['corrected_text'] = None
     st.session_state['rendered_html'] = None
@@ -113,28 +112,28 @@ def logout_user():
     set_page("login")
 
 # Convert free user to paid user
-def free_to_paid(name):
+def free_to_paid(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("UPDATE account SET type = 'P' WHERE name = ?", (name,))
-    cur.execute("INSERT INTO token (name, available, used) VALUES (?, ?, ?)", (name, 0, 0))
+    cur.execute("UPDATE account SET type = 'P' WHERE client_id = ?", (client_id,))
+    cur.execute("INSERT INTO token (client_id, available, used) VALUES (?, ?, ?)", (client_id, 0, 0))
     con.commit()
     con.close()
 
 # Convert free user to super user (for testing)
-def free_to_super(name):
+def free_to_super(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("UPDATE account SET type = 'S' WHERE name = ?", (name,))
+    cur.execute("UPDATE account SET type = 'S' WHERE client_id = ?", (client_id,))
     con.commit()
     con.close()
 
 # Submit free to paid user conversion request
-def request_free_to_paid(name):
+def request_free_to_paid(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
     try:
-        cur.execute("INSERT INTO upgrade (name, timestamp) VALUES (?, ?)", (name, int(time.time())))
+        cur.execute("INSERT INTO upgrade (client_id, timestamp) VALUES (?, ?)", (client_id, int(time.time())))
         con.commit()
         return True
     except sqlite3.IntegrityError:
@@ -143,45 +142,45 @@ def request_free_to_paid(name):
         con.close()
 
 # Get token information from user account
-def get_token(name):
+def get_token(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("SELECT available, used FROM token WHERE name = ?", (name,))
+    cur.execute("SELECT available, used FROM token WHERE client_id = ?", (client_id,))
     result = cur.fetchone()
     con.close()
     return result if result else (0, 0)
 
 # Update token to user account
-def update_token(name, available, used):
+def update_token(client_id, available, used):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("UPDATE token SET available = available + ?, used = used + ? WHERE name = ?", (available, used, name))
+    cur.execute("UPDATE token SET available = available + ?, used = used + ? WHERE client_id = ?", (available, used, client_id))
     con.commit()
     con.close()
 
 # Get lockout information for free user
-def get_lockout(name):
+def get_lockout(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("SELECT time FROM lockout WHERE name = ?", (name,))
+    cur.execute("SELECT time FROM lockout WHERE client_id = ?", (client_id,))
     result = cur.fetchone()
     con.close()
     return result[0] if result else 0
 
 # Update lockout for free user
-def set_lockout(name, duration):
+def set_lockout(client_id, duration):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
     lock_time = int(time.time()) + duration
-    cur.execute("INSERT INTO lockout (name, time) VALUES (?, ?)", (name, lock_time))
+    cur.execute("INSERT INTO lockout (client_id, time) VALUES (?, ?)", (client_id, lock_time))
     con.commit()
     con.close()
 
 # Remove lockout for free user
-def remove_lockout(name):
+def remove_lockout(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("DELETE FROM lockout WHERE name = ?", (name,))
+    cur.execute("DELETE FROM lockout WHERE client_id = ?", (client_id,))
     con.commit()
     con.close()
 
@@ -206,10 +205,10 @@ def set_submission(user, original, corrected, error):
     con.close()
 
 # Count the number of correction for paid user
-def count_correction(name):
+def count_correction(client_id):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("SELECT COUNT(*) FROM submission WHERE user = ?", (name,))
+    cur.execute("SELECT COUNT(*) FROM submission WHERE user = ?", (client_id,))
     count = cur.fetchone()[0]
     con.close()
     return count
@@ -261,7 +260,7 @@ def correct_text(user_input):
         con.close()
 
         # Token use
-        available, used = get_token(st.session_state['name'])
+        available, used = get_token(st.session_state['client_id'])
         word_count = len(user_input.strip().split())
 
         # Query LLM
@@ -285,13 +284,13 @@ def correct_text(user_input):
         
         if st.session_state['type'] == 'P':
             # Deduct tokens for submission
-            update_token(st.session_state['name'], -word_count, word_count)
+            update_token(st.session_state['client_id'], -word_count, word_count)
             grammar_error = user_input.strip() != output.strip()
             # Save submission to history
-            set_submission(st.session_state['name'], user_input, output, 1 if grammar_error else 0)
+            set_submission(st.session_state['client_id'], user_input, output, 1 if grammar_error else 0)
             # Award bonus tokens for submission with no error
             if word_count > 10 and not grammar_error:
-                update_token(st.session_state['name'], 3, 0)
+                update_token(st.session_state['client_id'], 3, 0)
                 st.success("No error found. Awarded 3 bonus tokens.")
 
         # Prepare for diffing
@@ -345,7 +344,7 @@ def correct_text(user_input):
             for w in set(to_log):
                 cur.execute(
                     "INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)",
-                    (st.session_state['name'], w, int(time.time()))
+                    (st.session_state['client_id'], w, int(time.time()))
                 )
             con.commit()
             con.close()

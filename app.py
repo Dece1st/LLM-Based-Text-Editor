@@ -4,6 +4,14 @@ from utils import *
 
 st.set_page_config(page_title="LLM-Based Text Editor")
 
+# Initialize session state keys
+for key in ['auth_stat', 'name', 'type', 'client_id', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
+    st.session_state.setdefault(key, None)
+
+client_ip = st.query_params.get("client_ip", [None])[0]
+client_id = client_ip or st.session_state.get("name")
+st.session_state['client_id'] = client_id
+
 st.markdown(
     """
     <style>
@@ -14,10 +22,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
-# Initialize session state keys
-for key in ['auth_stat', 'name', 'type', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
-    st.session_state.setdefault(key, None)
 
 @st.fragment
 def render_download_button():
@@ -34,26 +38,28 @@ page = get_page()
 if page == "login":
     st.title("Login")
 
-    with st.form("login_fom"):
+    with st.form("login_form"):
         name = st.text_input("Name")
         password = st.text_input("Password", type="password")
 
         submitted_login = st.form_submit_button("Login")
         submitted_signup = st.form_submit_button("Sign Up")
-
-    # Lockout check
-    lock_time = get_lockout(name)
-    if lock_time > int(time.time()):
-        remaining = lock_time - int(time.time())
-        st.error(f"Account locked due to exceeding word limit. Try again in {remaining} seconds.")
-        st.stop()
     
     if submitted_login:
-        type = search_user(name, password)
-        if type:
+        user_type = search_user(name, password)
+        if user_type:
+            # only ban free users by IP
+            if user_type == 'F':
+                lock_time = get_lockout(client_id)
+                if lock_time > time.time():
+                    remaining = lock_time - time.time()
+                    st.error(f"You have been timed out for {remaining:.0f}s")
+                    st.stop()
+
+            # at this point, login OK
+            st.session_state['name']     = name
             st.session_state['auth_stat'] = True
-            st.session_state['name'] = name
-            st.session_state['type'] = type
+            st.session_state['type']     = user_type
             set_page("main")
         else:
             st.session_state['auth_stat'] = False
@@ -78,8 +84,12 @@ elif page == "signup":
 
     if submitted_signup:
         if name and password:
+            if get_lockout(client_id) > time.time():
+                st.error("You cannot create a new free account yet. Try again later.")
+                st.stop()
             if add_user(name, 'F', password):
                 st.success("Signup successful! Redirecting to login...")
+                st.session_state['auth_stat'] = None
                 set_page("login")
             else:
                 st.error("Name already exists")
@@ -87,6 +97,7 @@ elif page == "signup":
             st.error("Please fill in all fields")
 
     if submitted_login:
+        st.session_state['auth_stat'] = None
         set_page("login")
 
 elif page == "moderation":
@@ -121,22 +132,22 @@ elif page == "moderation":
                         st.rerun()
         
         st.subheader("Pending Paid User Requests")
-        cur.execute("SELECT name, timestamp FROM upgrade")
+        cur.execute("SELECT client_id, timestamp FROM upgrade")
         request = cur.fetchall()
         if request:
             for name, timestamp in request:
                 ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    st.write(f"🔸 User: {name} (Requested at: {ts})")
+                    st.write(f"🔸 User: {client_id} (Requested at: {ts})")
                 with col2:
                     if st.button("✅ Approve", key=f"approve_{name}"):
-                        free_to_paid(name)
-                        cur.execute("DELETE FROM upgrade WHERE name = ?", (name,))
+                        free_to_paid(client_id)
+                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (client_id,))
                         con.commit()
                         st.rerun()
                     if st.button("❌ Decline", key=f"decline_{name}"):
-                        cur.execute("DELETE FROM upgrade WHERE name = ?", (name,))
+                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (client_id,))
                         con.commit()
                         st.rerun()
         else:
@@ -180,7 +191,7 @@ elif page == "history":
         set_page("main")
     else:
         st.title("📜 Submission History")
-        history = get_submission(st.session_state['name'])
+        history = get_submission(st.session_state['client_id'])
         
         if not history:
             st.info("No submission recorded.")
@@ -218,8 +229,8 @@ elif page == "main":
         st.write(f"Hello, {st.session_state['name']}!")
 
         if st.session_state['type'] == 'P':
-            available, used = get_token(st.session_state['name'])
-            corrections = count_correction(st.session_state['name'])
+            available, used = get_token(st.session_state['client_id'])
+            corrections = count_correction(st.session_state['client_id'])
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Available Tokens", available)
@@ -230,16 +241,16 @@ elif page == "main":
             token_input = st.number_input("Enter Tokens", min_value=1, step=1)
             
             if st.button("Add Tokens"):
-                update_token(st.session_state['name'], token_input, 0)
+                update_token(st.session_state['client_id'], token_input, 0)
                 st.rerun()
             
             if st.button("View Submission History"):
                 set_page("history")
         
         elif st.session_state['type'] == 'F':
-            is_locked = get_lockout(st.session_state['name'])
-            if is_locked:
-                remove_lockout(st.session_state['name'])
+            lock_time = get_lockout(client_id)
+            if lock_time and lock_time < time.time():
+                remove_lockout(client_id)
             
             if st.button("Sign up as Paid User"):
                 if request_free_to_paid(st.session_state['name']):
@@ -277,7 +288,7 @@ elif page == "main":
             if st.session_state['type'] == 'F' and word_count > 20:
                 st.markdown(f"<span style='color:red;'>Word count: {word_count} (Limit: 20. Submitting will result in a 3 minute timeout.)</span>", unsafe_allow_html=True)
             elif st.session_state['type'] == 'P':
-                available, _ = get_token(st.session_state['name'])
+                available, _ = get_token(st.session_state['client_id'])
                 if word_count > available:
                     st.markdown(f"<span style='color:red;'>Word count: {word_count} (Exceeds available tokens: {available}. Submitting will cut your tokens in half.)</span>", unsafe_allow_html=True)
                 else:
@@ -285,36 +296,74 @@ elif page == "main":
             else:
                 st.write(f"Word count: {word_count}")
 
+            # ─── Submit button ───
             if st.button("Submit"):
                 if user_input.strip():
                     word_count = len(user_input.split())
                     instruction_like = (
-                        re.search(r"(correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))", user_input.lower())
+                        re.search(
+                            r"(correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))",
+                            user_input.lower()
+                        )
                         and word_count < 25
                     )
                     if instruction_like:
-                        st.warning("⚠️ Your input looks like an instruction. If you're trying to correct a real sentence, rephrase it to avoid triggering unintended behavior.")
+                        st.warning(
+                            "⚠️ Your input looks like an instruction. "
+                            "If you're trying to correct a real sentence, rephrase it."
+                        )
                     else:
+                        # Free user flow
                         if st.session_state['type'] == 'F':
                             if word_count > 20:
-                                set_lockout(st.session_state['name'], 180)
+                                set_lockout(client_id, 180)
                                 logout_user()
                             else:
                                 st.session_state["user_input"] = user_input
                                 correct_text(user_input)
+
+                        # Paid user flow: defer to confirmation
                         elif st.session_state['type'] == 'P':
-                            available, used = get_token(st.session_state['name'])
+                            available, used = get_token(st.session_state['client_id'])
                             if available >= word_count:
-                                st.session_state["user_input"] = user_input
-                                correct_text(user_input)
+                                # flag for confirmation on next rerun
+                                st.session_state["pending_submit"] = True
+                                st.session_state["pending_input"]  = user_input
+                                st.session_state["pending_count"]  = word_count
                             else:
                                 penalty = available // 2
-                                update_token(st.session_state['name'], -penalty, penalty)
-                                new_available, _ = get_token(st.session_state['name'])
-                                st.warning(f"⚠️ Not enough tokens. Half your tokens were deducted. Remaining: {new_available}")
+                                update_token(
+                                    st.session_state['client_id'],
+                                    -penalty,
+                                    penalty
+                                )
+                                new_available, _ = get_token(st.session_state['client_id'])
+                                st.warning(
+                                    f"⚠️ Not enough tokens. "
+                                    f"Half your tokens were deducted. Remaining: {new_available}"
+                                )
                                 st.stop()
                 else:
                     st.warning("Input can't be empty.")
+
+            # ─── Confirmation UI for paid users ───
+            if st.session_state.get("pending_submit"):
+                tokens = st.session_state["pending_count"]
+                st.warning(f"⚠️ {tokens} tokens will be deducted. Are you sure?")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Yes, submit", key="confirm_submit"):
+                        # perform the correction
+                        correct_text(st.session_state["pending_input"])
+                        # clear the pending flags
+                        for k in ("pending_submit", "pending_input", "pending_count"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key="cancel_submit"):
+                        # abort
+                        for k in ("pending_submit", "pending_input", "pending_count"):
+                            st.session_state.pop(k, None)
 
             if st.session_state.get("downloaded_success"):
                 st.success(st.session_state["downloaded_success"])
@@ -398,9 +447,9 @@ elif page == "main":
                         file_name="corrected_text.txt",
                         mime="text/plain",
                     ):
-                        available, _ = get_token(st.session_state['name'])
+                        available, _ = get_token(st.session_state['client_id'])
                         if available >= 5:
-                            update_token(st.session_state['name'], -5, 5)
+                            update_token(st.session_state['client_id'], -5, 5)
                             st.session_state["downloaded_success"] = f"File downloaded. 5 tokens deducted. Remaining: {available - 5}"
                             st.session_state["can_download"] = False
                             st.session_state["rendered_html"] = None
