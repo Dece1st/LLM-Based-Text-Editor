@@ -163,6 +163,35 @@ elif page == "logs":
         if st.button("Logout"):
             logout_user()
 
+elif page == "history":
+    if st.session_state['type'] != 'P':
+        st.error("Access denied.")
+        set_page("main")
+    else:
+        st.title("📜 Submission History")
+        history = get_submission(st.session_state['name'])
+        
+        if not history:
+            st.info("No submission recorded.")
+        else:
+            st.subheader("Past Submissions")
+            for original, corrected, error, timestamp in history:
+                ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+                with st.expander(f"Submitted at {ts} ({'Error' if error else 'No Error'})"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("Original Text")
+                        st.text_area("", original, height=150, disabled=True, key=f"original_{timestamp}")
+                    with col2:
+                        st.markdown("Corrected Text")
+                        st.text_area("", corrected, height=150, disabled=True, key=f"corrected_{timestamp}")
+        
+        if st.button("Back to Main Page"):
+            set_page("main")
+        
+        if st.button("Logout"):
+            logout_user()
+
 elif page == "main":
     if not st.session_state['auth_stat']:
         set_page("login")
@@ -186,6 +215,9 @@ elif page == "main":
             if st.button("Add Tokens"):
                 update_token(st.session_state['name'], token_input, 0)
                 st.rerun()
+            
+            if st.button("View Submission History"):
+                set_page("history")
         
         elif st.session_state['type'] == 'F':
             is_locked = get_lockout(st.session_state['name'])

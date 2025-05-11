@@ -49,6 +49,17 @@ def set_db():
             FOREIGN KEY (name) REFERENCES account(name)
         )'''
     )
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS submission (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user TEXT,
+            original TEXT,
+            corrected TEXT,
+            error INTEGER,
+            timestamp INTEGER,
+            FOREIGN KEY (user) REFERENCES account(name)
+        )'''
+    )
     con.commit()
     con.close()
 
@@ -173,6 +184,26 @@ def remove_lockout(name):
     con.commit()
     con.close()
 
+# Get submission history for paid user
+def get_submission(user):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT original, corrected, error, timestamp FROM submission WHERE user = ? ORDER BY timestamp DESC", (user,))
+    hist = cur.fetchall()
+    con.close()
+    return hist
+
+# Add submission to history
+def set_submission(user, original, corrected, error):
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute(
+        "INSERT INTO submission (user, original, corrected, error, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (user, original, corrected, error, int(time.time()))
+    )
+    con.commit()
+    con.close()
+
 # LLM text correction
 def correct_text(user_input):
     try:
@@ -206,9 +237,17 @@ def correct_text(user_input):
         )
         output = response['message']['content']
         words = output.split()
-
-        # Deduct tokens for the LLM pass
-        update_token(st.session_state['name'], -word_count, word_count)
+        
+        if st.session_state['type'] == 'P':
+            # Deduct tokens for submission
+            update_token(st.session_state['name'], -word_count, word_count)
+            grammar_error = user_input.strip() != output.strip()
+            # Save submission to history
+            set_submission(st.session_state['name'], user_input, output, 1 if grammar_error else 0)
+            # Award bonus tokens for submission with no error
+            if word_count > 10 and not grammar_error:
+                update_token(st.session_state['name'], 3, 0)
+                st.success("No error found. Awarded 3 bonus tokens.")
 
         # Censoring
         censored_output = []
