@@ -154,7 +154,14 @@ def get_token(client_id):
 def update_token(client_id, available, used):
     con = sqlite3.connect('account.db')
     cur = con.cursor()
-    cur.execute("UPDATE token SET available = available + ?, used = used + ? WHERE client_id = ?", (available, used, client_id))
+    # make sure there’s a row to update
+    cur.execute("INSERT OR IGNORE INTO token (client_id) VALUES (?)", (client_id,))
+    cur.execute(
+        "UPDATE token "
+        "SET available = available + ?, "
+            "used      = used      + ? "
+        "WHERE client_id = ?", (available, used, client_id)
+    )
     con.commit()
     con.close()
 

@@ -1,6 +1,7 @@
 ﻿from streamlit_html_viewer.streamlit_html_viewer import streamlit_html_viewer as html_viewer
-import streamlit as st
 from utils import *
+import streamlit as st
+import os
 
 st.set_page_config(page_title="LLM-Based Text Editor")
 
@@ -8,8 +9,10 @@ st.set_page_config(page_title="LLM-Based Text Editor")
 for key in ['auth_stat', 'name', 'type', 'client_id', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
     st.session_state.setdefault(key, None)
 
-client_ip = st.query_params.get("client_ip", [None])[0]
-client_id = client_ip or st.session_state.get("name")
+ip = st.context.ip_address
+if not ip:
+    ip = st.query_params.get("client_ip", [None])[0]
+client_id = ip or ""
 st.session_state['client_id'] = client_id
 
 st.markdown(
@@ -139,15 +142,15 @@ elif page == "moderation":
                 ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    st.write(f"🔸 User: {client_id} (Requested at: {ts})")
+                    st.write(f"🔸 User: {name} (Requested at: {ts})")
                 with col2:
                     if st.button("✅ Approve", key=f"approve_{name}"):
-                        free_to_paid(client_id)
-                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (client_id,))
+                        free_to_paid(name)
+                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (name,))
                         con.commit()
                         st.rerun()
                     if st.button("❌ Decline", key=f"decline_{name}"):
-                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (client_id,))
+                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (name,))
                         con.commit()
                         st.rerun()
         else:
