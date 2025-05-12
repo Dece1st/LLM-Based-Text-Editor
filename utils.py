@@ -246,6 +246,25 @@ def count_correction(client_id):
     con.close()
     return count
 
+# app.py (or utils.py if you prefer)
+import re
+
+def html_to_clean_text(html_data: str) -> str:
+    # 1) remove styles
+    html = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
+    # 2) div → paragraph breaks
+    html = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html)
+    # 3) multiple <br> → paragraph breaks
+    html = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html)
+    # 4) single <br> → line break
+    html = re.sub(r"<br\s*/?>", "\n", html)
+    # 5) strip all other tags
+    text = re.sub(r"<[^>]+>", "", html)
+    # 6) collapse each line’s whitespace
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    # 7) drop empty lines and rejoin
+    return "\n\n".join([ln for ln in lines if ln.strip()])
+
 # LLM text correction
 def correct_text(user_input):
     try:

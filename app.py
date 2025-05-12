@@ -435,15 +435,7 @@ elif page == "main":
 
                     # 2) Now show cost + Yes/No
                     else:
-                        # build your plain-text exactly as you do for download
-                        html_data = st.session_state["corrected_text"]
-                        html_data = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
-                        html_data = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html_data)
-                        html_data = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html_data)
-                        html_data = re.sub(r"<br\s*/?>", "\n", html_data)
-                        text_only = re.sub(r"<[^>]+>", "", html_data)
-                        lines = [" ".join(line.split()) for line in text_only.splitlines()]
-                        clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
+                        clean_text = html_to_clean_text(st.session_state["corrected_text"])
 
                         # cost it out in one line
                         tokens = count_price(st.session_state["pending_input"], clean_text)
@@ -470,14 +462,7 @@ elif page == "main":
                 if st.session_state.get("can_download"):
                     st.markdown("### 📄 Preview of Approved Edits")
 
-                    html_data = st.session_state["corrected_text"]
-                    html_data = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
-                    html_data = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html_data)
-                    html_data = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html_data)
-                    html_data = re.sub(r"<br\s*/?>", "\n", html_data)
-                    text_only = re.sub(r"<[^>]+>", "", html_data)
-                    lines = [" ".join(line.split()) for line in text_only.splitlines()]
-                    clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
+                    clean_text = html_to_clean_text(st.session_state["corrected_text"])
 
                     st.text_area("", clean_text, height=200, disabled=True)
                     st.success(f"💰 Deducted {st.session_state["tokens"]} tokens for confirmed edits.")
