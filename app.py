@@ -359,7 +359,7 @@ elif page == "main":
                         # perform the correction
                         correct_text(st.session_state["pending_input"])
                         # clear the pending flags
-                        for k in ("pending_submit", "pending_input", "pending_count"):
+                        for k in ("pending_submit", "pending_count"):
                             st.session_state.pop(k, None)
                         st.rerun()
                 with col2:
@@ -422,13 +422,50 @@ elif page == "main":
 
             if st.session_state['type'] == 'P':
                 if st.session_state.get("corrected_text") and not st.session_state.get("can_download"):
-                    if st.button("🔒 Confirm Edits"):
-                        st.session_state["can_download"] = True
-                        st.rerun()
-                    st.markdown(
-                        "⚠️ Pressing this will lock further edits.",
-                        unsafe_allow_html=True
-                    )
+
+                    # 1) First click: mark that we’re “confirming purchase”
+                    if not st.session_state.get("confirming_purchase"):
+                        if st.button("🔒 Confirm Edits"):
+                            st.session_state["confirming_purchase"] = True
+                            st.rerun()
+                        st.markdown(
+                            "⚠️ Pressing this will lock further edits.",
+                            unsafe_allow_html=True
+                        )
+
+                    # 2) Now show cost + Yes/No
+                    else:
+                        # build your plain-text exactly as you do for download
+                        html_data = st.session_state["corrected_text"]
+                        html_data = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
+                        html_data = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html_data)
+                        html_data = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html_data)
+                        html_data = re.sub(r"<br\s*/?>", "\n", html_data)
+                        text_only = re.sub(r"<[^>]+>", "", html_data)
+                        lines = [" ".join(line.split()) for line in text_only.splitlines()]
+                        clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
+
+                        # cost it out in one line
+                        tokens = count_price(st.session_state["pending_input"], clean_text)
+                        st.warning(f"⚠️ This will cost you {tokens} tokens. Proceed?")
+
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✅ Yes", key="confirm_yes"):
+                                update_token(
+                                    st.session_state['client_id'],
+                                    -tokens,  # subtract from available
+                                    tokens    # add to used
+                                )
+                                st.session_state["can_download"]        = True
+                                st.session_state["confirming_purchase"] = False
+                                st.session_state["tokens"]              = tokens
+                                st.rerun()
+                        with c2:
+                            if st.button("❌ No", key="confirm_no"):
+                                st.session_state["confirming_purchase"] = False
+                                st.info("Edit confirmation cancelled.")
+                                st.rerun()
 
                 if st.session_state.get("can_download"):
                     st.markdown("### 📄 Preview of Approved Edits")
@@ -443,6 +480,7 @@ elif page == "main":
                     clean_text = "\n\n".join([ln for ln in lines if ln.strip()])
 
                     st.text_area("", clean_text, height=200, disabled=True)
+                    st.success(f"💰 Deducted {st.session_state["tokens"]} tokens for confirmed edits.")
 
                     if st.download_button(
                         label="📥 Download .txt File (5 Tokens)",

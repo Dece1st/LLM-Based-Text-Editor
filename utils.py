@@ -1,6 +1,7 @@
 import streamlit as st
 import html as html_lib
-import ollama, difflib, sqlite3, hashlib, time, re, unicodedata
+import ollama, sqlite3, hashlib, time, re, unicodedata, ftfy
+from difflib import SequenceMatcher
 
 # Set up database
 def set_db():
@@ -62,6 +63,10 @@ def set_db():
     ''')
     con.commit()
     con.close()
+
+def normalize_punctuation(text: str) -> str:
+    fixed = ftfy.fix_text(text)
+    return unicodedata.normalize("NFKC", fixed)
 
 # Load login page
 def get_page():
@@ -165,6 +170,27 @@ def update_token(client_id, available, used):
     con.commit()
     con.close()
 
+
+def count_price(orig: str, final: str) -> int:
+    """
+    Charges:
+      - for deletions: number of words removed,
+      - for inserts/replaces: number of words in the final (corrected) phrase.
+    """
+    orig = normalize_punctuation(orig)
+    final = normalize_punctuation(final)
+    a = orig.split()
+    b = final.split()
+    s = SequenceMatcher(None, a, b)
+    cost = 0
+    for tag, i1, i2, j1, j2 in s.get_opcodes():
+        if tag != "equal":
+            if tag == "delete":
+                cost += (i2 - i1)
+            else:  # "replace" or "insert"
+                cost += (j2 - j1)
+    return cost
+
 # Get lockout information for free user
 def get_lockout(client_id):
     con = sqlite3.connect('account.db')
@@ -219,42 +245,6 @@ def count_correction(client_id):
     count = cur.fetchone()[0]
     con.close()
     return count
-
-_PUNCT_MAP = {
-    # quotes
-    '\u2018': "'",  # left single quotation mark
-    '\u2019': "'",  # right single quotation mark
-    '\u201C': '"',  # left double quotation mark
-    '\u201D': '"',  # right double quotation mark
-    '\u00AB': '"',  # left-pointing guillemet
-    '\u00BB': '"',  # right-pointing guillemet
-
-    # dashes
-    '\u2013': '-',  # en dash
-    '\u2014': '-',  # em dash
-
-    # ellipsis
-    '\u2026': '...', 
-
-    # spaces
-    '\u00A0': ' ',  # non-breaking space
-
-    # daggers, bullets, etc (optional)
-    '\u2022': '*',  # bullet
-    '\u2020': '+',  # dagger
-}
-_PUNCT_RE = re.compile('|'.join(re.escape(c) for c in _PUNCT_MAP))
-
-def normalize_punctuation(text: str) -> str:
-    """
-    Replace common Unicode punctuation with ASCII equivalents, then
-    apply Unicode compatibility normalization (NFKC) for any others.
-    """
-    # first, map our table
-    text = _PUNCT_RE.sub(lambda m: _PUNCT_MAP[m.group(0)], text)
-    # then normalize compatibility chars (like ﬁ → fi)
-    text = unicodedata.normalize('NFKC', text)
-    return text
 
 # LLM text correction
 def correct_text(user_input):
@@ -315,7 +305,7 @@ def correct_text(user_input):
             for o_line, c_line in zip(orig_lines, corr_lines):
                 o_words = o_line.split()
                 c_words = c_line.split()
-                diff = difflib.SequenceMatcher(None, o_words, c_words)
+                diff = SequenceMatcher(None, o_words, c_words)
                 for tag, o1, o2, c1, c2 in diff.get_opcodes():
                     if tag == 'equal':
                         html_body += " ".join(c_words[c1:c2]) + " "
