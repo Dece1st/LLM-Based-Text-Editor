@@ -418,7 +418,7 @@ elif page == "main":
                     clean_text = html_to_clean_text(st.session_state["corrected_text"])
 
                     st.text_area("", clean_text, height=200, disabled=True)
-                    st.success(f"💰 Deducted {st.session_state["tokens"]} tokens for confirmed edits.")
+                    st.success(f"💰 Deducted {st.session_state['tokens']} tokens for confirmed edits.")
 
                     if st.download_button(
                         label="📥 Download .txt File (5 Tokens)",
