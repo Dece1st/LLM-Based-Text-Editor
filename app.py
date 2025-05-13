@@ -229,7 +229,7 @@ elif page == "main":
             if st.button("View Logs"):
                 set_page("logs")
 
-        st.write(f"Hello, {st.session_state['name']}!")
+        st.write(f"## Hello, {st.session_state['name']}!")
 
         if st.session_state['type'] == 'P':
             show_paid_user_metrics(st.session_state['client_id'])
@@ -238,9 +238,6 @@ elif page == "main":
             if st.button("Add Tokens"):
                 update_token(st.session_state['client_id'], token_input, 0)
                 st.rerun()
-            
-            if st.button("View Submission History"):
-                set_page("history")
         
         elif st.session_state['type'] == 'F':
             lock_time = get_lockout(client_id)
@@ -359,6 +356,10 @@ elif page == "main":
                         # abort
                         for k in ("pending_submit", "pending_input", "pending_count"):
                             st.session_state.pop(k, None)
+
+            if st.session_state['type'] == 'P':
+                if st.button("View Submission History", key="view_history"):
+                    set_page("history")
 
             if st.session_state.get("downloaded_success"):
                 st.success(st.session_state["downloaded_success"])
