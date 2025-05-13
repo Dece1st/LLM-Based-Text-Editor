@@ -1,7 +1,6 @@
 ﻿from streamlit_html_viewer.streamlit_html_viewer import streamlit_html_viewer as html_viewer
 from utils import *
 import streamlit as st
-import os
 
 st.set_page_config(page_title="LLM-Based Text Editor")
 
@@ -42,11 +41,11 @@ if page == "login":
     st.title("Login")
 
     with st.form("login_form"):
-        name = st.text_input("Name")
+        name = st.text_input("Username")
         password = st.text_input("Password", type="password")
 
         submitted_login = st.form_submit_button("Login")
-        submitted_signup = st.form_submit_button("Sign Up")
+        submitted_signup = st.form_submit_button("Create A New Account")
     
     if submitted_login:
         user_type = search_user(name, password)
@@ -72,21 +71,25 @@ if page == "login":
         set_page("signup")
     
     if st.session_state['auth_stat'] is None:
-        st.warning("Please enter name and password")
+        st.warning("Please enter username and password")
 
 elif page == "signup":
     st.title("Sign Up")
 
-    # Signup form
     with st.form("signup_form"):
-        name = st.text_input("Name")
+        name     = st.text_input("Username")
         password = st.text_input("Password", type="password")
+        confirm  = st.text_input("Confirm Password", type="password")
 
         submitted_signup = st.form_submit_button("Sign Up")
-        submitted_login = st.form_submit_button("Login")
+        submitted_login  = st.form_submit_button("Login Instead")
 
     if submitted_signup:
-        if name and password:
+        if not name or not password or not confirm:
+            st.error("Please fill in all fields")
+        elif password != confirm:
+            st.error("Passwords do not match")
+        else:
             if get_lockout(client_id) > time.time():
                 st.error("You cannot create a new free account yet. Try again later.")
                 st.stop()
@@ -95,9 +98,11 @@ elif page == "signup":
                 st.session_state['auth_stat'] = None
                 set_page("login")
             else:
-                st.error("Name already exists")
-        else:
-            st.error("Please fill in all fields")
+                st.error("Username already exists")
+
+    if submitted_login:
+        st.session_state['auth_stat'] = None
+        set_page("login")
 
     if submitted_login:
         st.session_state['auth_stat'] = None
@@ -232,12 +237,13 @@ elif page == "main":
         st.write(f"## Hello, {st.session_state['name']}!")
 
         if st.session_state['type'] == 'P':
-            show_paid_user_metrics(st.session_state['client_id'])
-            token_input = st.number_input("Enter Tokens", min_value=1, step=1)
-            
-            if st.button("Add Tokens"):
-                update_token(st.session_state['client_id'], token_input, 0)
-                st.rerun()
+            with st.expander("## View/Add Tokens", expanded = True):
+                show_paid_user_metrics(st.session_state['client_id'])
+                token_input = st.number_input("Enter Tokens", min_value=1, step=1)
+                
+                if st.button("Add Tokens"):
+                    update_token(st.session_state['client_id'], token_input, 0)
+                    st.rerun()
         
         elif st.session_state['type'] == 'F':
             lock_time = get_lockout(client_id)
@@ -376,21 +382,15 @@ elif page == "main":
             if st.session_state['type'] == 'P':
                 if st.session_state.get("corrected_text") and not st.session_state.get("can_download"):
 
-                    # 1) First click: mark that we’re “confirming purchase”
                     if not st.session_state.get("confirming_purchase"):
                         if st.button("🔒 Confirm Edits"):
                             st.session_state["confirming_purchase"] = True
                             st.rerun()
-                        st.markdown(
-                            "⚠️ Pressing this will lock further edits.",
-                            unsafe_allow_html=True
-                        )
+                        st.markdown("⚠️ Pressing this will lock further edits.", unsafe_allow_html=True)
 
-                    # 2) Now show cost + Yes/No
                     else:
                         clean_text = html_to_clean_text(st.session_state["corrected_text"])
 
-                        # cost it out in one line
                         tokens = count_price(st.session_state["pending_input"], clean_text)
                         st.warning(f"⚠️ This will cost you {tokens} tokens. Proceed?")
 

@@ -279,7 +279,6 @@ def correct_text(user_input):
         con.close()
 
         # Token use
-        available, used = get_token(st.session_state['client_id'])
         word_count = len(user_input.strip().split())
 
         # Query LLM
