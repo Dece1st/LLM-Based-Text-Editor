@@ -64,10 +64,6 @@ def set_db():
     con.commit()
     con.close()
 
-def normalize_punctuation(text: str) -> str:
-    fixed = ftfy.fix_text(text)
-    return unicodedata.normalize("NFKC", fixed)
-
 # Load login page
 def get_page():
     return st.query_params.get("page", "login")
@@ -170,6 +166,17 @@ def update_token(client_id, available, used):
     con.commit()
     con.close()
 
+def show_paid_user_metrics(client_id):
+    available, used = get_token(client_id)
+    corrections = count_correction(client_id)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Available Tokens", available)
+    with c2:
+        st.metric("Used Tokens", used)
+    with c3:
+        st.metric("Corrections", corrections)
+
 
 def count_price(orig: str, final: str) -> int:
     """
@@ -246,23 +253,19 @@ def count_correction(client_id):
     con.close()
     return count
 
-# app.py (or utils.py if you prefer)
-import re
+# No special characters for punctuation
+def normalize_punctuation(text: str) -> str:
+    fixed = ftfy.fix_text(text)
+    return unicodedata.normalize("NFKC", fixed)
 
+# Remove HTML tags
 def html_to_clean_text(html_data: str) -> str:
-    # 1) remove styles
     html = re.sub(r"<style.*?>.*?</style>", "", html_data, flags=re.S)
-    # 2) div → paragraph breaks
     html = re.sub(r"</div>\s*<div[^>]*>", "\n\n", html)
-    # 3) multiple <br> → paragraph breaks
     html = re.sub(r"(?:<br\s*/?>\s*){2,}", "\n\n", html)
-    # 4) single <br> → line break
     html = re.sub(r"<br\s*/?>", "\n", html)
-    # 5) strip all other tags
     text = re.sub(r"<[^>]+>", "", html)
-    # 6) collapse each line’s whitespace
     lines = [" ".join(line.split()) for line in text.splitlines()]
-    # 7) drop empty lines and rejoin
     return "\n\n".join([ln for ln in lines if ln.strip()])
 
 # LLM text correction
@@ -299,17 +302,13 @@ def correct_text(user_input):
         output = resp['message']['content']
         
         if st.session_state['type'] == 'P':
-            # Deduct tokens for submission
             update_token(st.session_state['client_id'], -word_count, word_count)
             grammar_error = user_input.strip() != output.strip()
-            # Save submission to history
             set_submission(st.session_state['client_id'], user_input, output, 1 if grammar_error else 0)
-            # Award bonus tokens for submission with no error
             if word_count > 10 and not grammar_error:
                 update_token(st.session_state['client_id'], 3, 0)
                 st.success("No error found. Awarded 3 bonus tokens.")
 
-        # Prepare for diffing
         user_input = normalize_punctuation(user_input)
         output = normalize_punctuation(output)
 
@@ -377,3 +376,60 @@ def correct_text(user_input):
     except Exception:
         st.error("❌ Failed to connect to the language model. Please try again.")
         st.stop()
+
+def render_blacklist_form():
+    st.markdown("---")
+    st.subheader("🚫 Suggest a word for blacklist")
+    w = st.text_input("Enter a word to suggest")
+    if st.button("Submit to Blacklist"):
+        submit_blacklist_word(w.strip().lower())
+
+def submit_blacklist_word(word: str):
+    if not word:
+        st.warning("Input can't be empty.")
+        return
+    con = sqlite3.connect('account.db')
+    cur = con.cursor()
+    cur.execute("SELECT 1 FROM blacklist WHERE word = ?", (word,))
+    if cur.fetchone():
+        st.info("This word has already been submitted.")
+    else:
+        cur.execute("INSERT INTO blacklist (word, status) VALUES (?, 'pending')", (word,))
+        con.commit()
+        st.success("Submitted for review.")
+    con.close()
+
+######## CSS Style for Corrected Text Box ########
+SCROLLABLE_CSS = """
+<style>
+.scrollable {
+    background-color: #262730;
+    border: 1px solid #1D751D;
+    border-radius: 8px;
+    padding: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    user-select: none;
+}
+/* Chrome, Edge, Safari */
+.scrollable::-webkit-scrollbar {
+    width: 6px;
+}
+.scrollable::-webkit-scrollbar-track {
+    background: #262730;
+    border-radius: 3px;
+}
+.scrollable::-webkit-scrollbar-thumb {
+    background-color: #7B7B81;
+    border-radius: 3px;
+}
+/* Firefox */
+.scrollable {
+    scrollbar-width: thin;
+    scrollbar-color: #7B7B81 #262730;
+}
+</style>
+"""
+
+def wrap_scrollable(raw_html: str) -> str:
+    return f"{SCROLLABLE_CSS}<div class='scrollable'>{raw_html}</div>"

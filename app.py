@@ -232,15 +232,7 @@ elif page == "main":
         st.write(f"Hello, {st.session_state['name']}!")
 
         if st.session_state['type'] == 'P':
-            available, used = get_token(st.session_state['client_id'])
-            corrections = count_correction(st.session_state['client_id'])
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Available Tokens", available)
-            with col2:
-                st.metric("Used Tokens", used)
-            with col3:
-                st.metric("Corrections", corrections)
+            show_paid_user_metrics(st.session_state['client_id'])
             token_input = st.number_input("Enter Tokens", min_value=1, step=1)
             
             if st.button("Add Tokens"):
@@ -374,49 +366,9 @@ elif page == "main":
 
             if st.session_state.get("rendered_html") and not st.session_state.get("can_download"):
                 st.subheader("✅ Corrected Text")
-
                 raw = st.session_state["rendered_html"]
-                css = """
-                <style>
-                .scrollable {
-                    background-color: #262730;
-                    border: 1px solid #1D751D;
-                    border-radius: 8px;
-                    padding: 8px;
-                    max-height: 300px;
-                    overflow-y: auto;
-                    user-select: none;          /* disable text selection */
-                }
-                /* Chrome, Edge, Safari */
-                .scrollable::-webkit-scrollbar {
-                    width: 6px;
-                }
-                .scrollable::-webkit-scrollbar-track {
-                    background: #262730;
-                    border-radius: 3px;
-                }
-                .scrollable::-webkit-scrollbar-thumb {
-                    background-color: #7B7B81;
-                    border-radius: 3px;
-                }
-                /* Firefox */
-                .scrollable {
-                    scrollbar-width: thin;
-                    scrollbar-color: #7B7B81 #262730;
-                }
-                </style>
-                """
-                wrapped = f"""
-                {css}
-                <div class="scrollable">
-                {raw}
-                </div>
-                """
-
-                edited = html_viewer(
-                    html=wrapped,
-                    height=300
-                )
+                wrapped = wrap_scrollable(raw)
+                edited  = html_viewer(html=wrapped, height=300)
                 if edited is not None:
                     st.session_state["corrected_text"] = edited
 
@@ -484,26 +436,7 @@ elif page == "main":
                         else:
                             st.error("Not enough tokens to download the file.")
 
-            st.markdown("---")
-            st.subheader("🚫 Suggest a word for blacklist")
-            blacklist_word = st.text_input("Enter a word to suggest")
-
-            if st.button("Submit to Blacklist"):
-                if blacklist_word.strip():
-                    word = blacklist_word.strip().lower()
-                    con = sqlite3.connect('account.db')
-                    cur = con.cursor()
-                    cur.execute("SELECT * FROM blacklist WHERE word = ?", (word,))
-                    exists = cur.fetchone()
-                    if exists:
-                        st.info("This word has already been submitted.")
-                    else:
-                        cur.execute("INSERT INTO blacklist (word, status) VALUES (?, 'pending')", (word,))
-                        con.commit()
-                        st.success("Submitted for review.")
-                    con.close()
-                else:
-                    st.warning("Input can't be empty.")
+            render_blacklist_form()
 
         if st.button("Logout"):
             logout_user()
