@@ -293,43 +293,46 @@ elif page == "collab":
         set_page("main")
 
 elif page == "main":
-    if st.session_state.get("auth_stat") and st.session_state['type'] == 'P':
-        # show invites only to Paid or Super Users
-        with st.sidebar.expander("🔔 Notifications", expanded=False):
-            invites = list_invites_for(st.session_state['name'])
-            if not invites:
-                st.write("No new invites.")
-            else:
-                for inv in invites:
-                    ts = time.strftime(
-                        "%Y-%m-%d %H:%M",
-                        time.localtime(inv["requested_ts"])
-                    )
-                    st.write(f"📩 **{inv['title']}** from _{inv['inviter']}_ at {ts}")
-                    col1, col2 = st.columns([1,1])
-                    with col1:
-                        if st.button("Accept", key=f"accept_{inv['invite_id']}"):
-                            respond_invite(inv['invite_id'], True)
-                            st.rerun()
-                    with col2:
-                        if st.button("Reject", key=f"reject_{inv['invite_id']}"):
-                            respond_invite(inv['invite_id'], False)
-                            st.rerun()
-    
-        with st.sidebar.expander("📁 Shared Documents", expanded=False):
-            files = list_files_for(st.session_state['name'])
-            if not files:
-                st.write("No documents yet.")
-            else:
-                for f in files:
-                    ts = time.strftime("%Y-%m-%d", time.localtime(f["created_ts"]))
-                    if st.button(f"{f['title']}  ({ts})", key=f"file_{f['file_id']}"):
-                        st.session_state["current_file"] = f["file_id"]
-                        set_page("collab")
-
     if not st.session_state['auth_stat']:
         set_page("login")
     else:
+        if st.session_state['type'] == 'P':
+            with st.sidebar:
+                if st.button("Logout", key="sidebar_logout"):
+                    logout_user()
+            # show invites only to paid users
+            with st.sidebar.expander("🔔 Notifications", expanded=False):
+                invites = list_invites_for(st.session_state['name'])
+                if not invites:
+                    st.write("No new invites.")
+                else:
+                    for inv in invites:
+                        ts = time.strftime(
+                            "%Y-%m-%d %H:%M",
+                            time.localtime(inv["requested_ts"])
+                        )
+                        st.write(f"📩 **{inv['title']}** from _{inv['inviter']}_ at {ts}")
+                        col1, col2 = st.columns([1,1])
+                        with col1:
+                            if st.button("Accept", key=f"accept_{inv['invite_id']}"):
+                                respond_invite(inv['invite_id'], True)
+                                st.rerun()
+                        with col2:
+                            if st.button("Reject", key=f"reject_{inv['invite_id']}"):
+                                respond_invite(inv['invite_id'], False)
+                                st.rerun()
+        
+            with st.sidebar.expander("📁 Shared Documents", expanded=False):
+                files = list_files_for(st.session_state['name'])
+                if not files:
+                    st.write("No documents yet.")
+                else:
+                    for f in files:
+                        ts = time.strftime("%Y-%m-%d", time.localtime(f["created_ts"]))
+                        if st.button(f"{f['title']}  ({ts})", key=f"file_{f['file_id']}"):
+                            st.session_state["current_file"] = f["file_id"]
+                            set_page("collab")
+
         st.title("📝 LLM-Based Text Editor")
         st.write(f"## Hello, {st.session_state['name']}!")
 
