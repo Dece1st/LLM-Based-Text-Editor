@@ -247,7 +247,18 @@ def update_token(client_id: str, available: int, used: int) -> None:
         """,
         (client_id,)
     )
-    # now apply the delta
+    # check current balance
+    cur.execute(
+        "SELECT available FROM token WHERE client_id = %s",
+        (client_id,)
+    )
+    row = cur.fetchone()
+    current_available = row["available"] if row else 0
+    # ensure new balance won't be negative
+    if current_available + available < 0:
+        con.close()
+        raise ValueError(f"Cannot deduct {abs(available)} tokens: only {current_available} available")
+    # apply the delta
     cur.execute(
         """
         UPDATE token
@@ -286,6 +297,21 @@ def count_price(orig: str, final: str) -> int:
             else:  # "replace" or "insert"
                 cost += (j2 - j1)
     return cost
+
+def self_correct_cost(orig: str, final: str) -> int:
+    orig = normalize_punctuation(orig)
+    final = normalize_punctuation(final)
+    a = orig.split()
+    b = final.split()
+    s = SequenceMatcher(None, a, b)
+    cost = 0
+    for tag, i1, i2, j1, j2 in s.get_opcodes():
+        if tag != "equal":
+            if tag == "delete":
+                cost += (i2 - i1)
+            else:
+                cost += (j2 - j1)
+    return (cost + 1) // 2
 
 def get_lockout(client_id: str) -> int:
     con = get_connection()
@@ -451,6 +477,12 @@ def correct_text(user_input):
 
         # Paid‐user token accounting & history
         if st.session_state['type'] == 'P':
+            available, _ = get_token(st.session_state['client_id'])
+            if available < word_count:
+                st.error(f"Not enough tokens for correction. Required: {word_count}, Available: {available}")
+                st.session_state["rendered_html"] = None
+                st.session_state["corrected_text"] = None
+                st.stop()
             update_token(st.session_state['client_id'], -word_count, word_count)
             grammar_error = user_input.strip() != output.strip()
             set_submission(
@@ -524,7 +556,9 @@ def correct_text(user_input):
         html_body = re.sub(r'(<br>\s*)+$', '', html_body)
         st.session_state["rendered_html"] = f"<div>{html_body}</div>"
         st.session_state["corrected_text"] = "\n\n".join(output.split("\n\n"))
-        st.session_state["can_download"]    = False
+        st.session_state["can_download"] = False
+        if "original_input" not in st.session_state:
+            st.session_state["original_input"] = user_input
 
     except Exception:
         st.error("❌ Failed to connect to the language model. Please try again.")

@@ -406,14 +406,18 @@ elif page == "main":
             else:
                 st.write(f"Word count: {word_count}")
 
+            correction_type = "LLM Correction"
+            if st.session_state['type'] == 'P':
+                correction_type = st.radio(
+                    "Select Correction Type",
+                    ["LLM Correction", "Self Correction"],
+                    key="correction_type"
+                )
+            
             # ─── Submit button ───
             if st.button("Submit"):
                 if user_input.strip():
                     word_count = len(user_input.split())
-
-                    if word_count <= 5:
-                        st.warning("⚠️ Your input must have more than 5 words.")
-                        st.stop()
                     
                     instruction_like = is_instruction_like(user_input)
 
@@ -437,13 +441,11 @@ elif page == "main":
                                 st.session_state["pending_submit"] = True
                                 st.session_state["pending_input"]  = user_input
                                 st.session_state["pending_count"]  = word_count
+                                st.session_state["pending_correction_type"] = correction_type
+                                st.session_state["original_input"] = user_input
                             else:
                                 penalty = available // 2
-                                update_token(
-                                    st.session_state['client_id'],
-                                    -penalty,
-                                    penalty
-                                )
+                                update_token(st.session_state['client_id'], -penalty, penalty)
                                 new_available, _ = get_token(st.session_state['client_id'])
                                 st.warning(
                                     f"⚠️ Not enough tokens. "
@@ -453,23 +455,78 @@ elif page == "main":
                 else:
                     st.warning("Input can't be empty.")
 
+            if st.session_state.get("pending_self_correction"):
+                st.subheader("Self-Correction")
+                self_corrected = st.text_area(
+                    "Edit your text below:",
+                    value=st.session_state["self_corrected_text"],
+                    height=200,
+                    key="self_corrected_area"
+                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Confirm Self-Correction", key="confirm_self_correction"):
+                        if not st.session_state["user_input"]:
+                            st.error("Original input is missing. Please submit text again.")
+                            st.session_state["pending_self_correction"] = False
+                            st.session_state["self_corrected_text"] = None
+                            st.rerun()
+                        elif self_corrected.strip():
+                            tokens = self_correct_cost(st.session_state["user_input"], self_corrected)
+                            available, _ = get_token(st.session_state['client_id'])
+                            if available >= tokens:
+                                update_token(st.session_state['client_id'], -tokens, tokens)
+                                set_submission(
+                                    st.session_state['client_id'],
+                                    st.session_state["user_input"],
+                                    self_corrected,
+                                    1 if st.session_state["user_input"] != self_corrected else 0
+                                )
+                                st.session_state["corrected_text"] = self_corrected
+                                st.session_state["can_download"] = True
+                                st.session_state["pending_self_correction"] = False
+                                st.session_state["self_corrected_text"] = None
+                                st.session_state["tokens"] = tokens
+                                st.success(f"💰 Deducted {tokens} tokens for self-correction.")
+                                st.rerun()
+                            else:
+                                st.error(f"Not enough tokens. Required: {tokens}, Available: {available}")
+                        else:
+                            st.warning("Corrected text can't be empty.")
+                with col2:
+                    if st.button("Cancel", key="cancel_self_correction"):
+                        st.session_state["pending_self_correction"] = False
+                        st.session_state["self_corrected_text"] = None
+                        st.rerun()
+            
             # ─── Confirmation UI for paid users ───
             if st.session_state.get("pending_submit"):
                 tokens = st.session_state["pending_count"]
-                st.warning(f"⚠️ {tokens} tokens will be deducted. Are you sure?")
+                correction_type = st.session_state["pending_correction_type"]
+                if correction_type == "LLM Correction":
+                    st.warning(f"⚠️ {tokens} tokens will be deducted for LLM correction. Are you sure?")
+                else:
+                    estimated_tokens = self_correct_cost(st.session_state["pending_input"], st.session_state["pending_input"])
+                    st.warning(f"⚠️ Tokens will be deducted based on actual self-correction edits. Are you sure?")
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button("Yes, submit", key="confirm_submit"):
                         # perform the correction
-                        correct_text(st.session_state["pending_input"])
+                        if correction_type == "LLM Correction":
+                            st.session_state["original_input"] = st.session_state["pending_input"]  # Store original input
+                            correct_text(st.session_state["pending_input"])
+                        else:
+                            st.session_state["self_corrected_text"] = st.session_state["pending_input"]
+                            st.session_state["user_input"] = st.session_state["pending_input"]
+                            st.session_state["pending_self_correction"] = True
                         # clear the pending flags
-                        for k in ("pending_submit", "pending_count"):
+                        for k in ("pending_submit", "pending_count", "pending_correction_type", "pending_input"):
                             st.session_state.pop(k, None)
                         st.rerun()
                 with col2:
                     if st.button("Cancel", key="cancel_submit"):
                         # abort
-                        for k in ("pending_submit", "pending_input", "pending_count"):
+                        for k in ("pending_submit", "pending_input", "pending_count", "pending_correction_type"):
                             st.session_state.pop(k, None)
 
             if st.session_state['type'] == 'P':
@@ -484,7 +541,7 @@ elif page == "main":
                 st.subheader("✅ Corrected Text")
                 raw = st.session_state["rendered_html"]
                 wrapped = wrap_scrollable(raw)
-                edited  = html_viewer(html=wrapped, height=300)
+                edited = html_viewer(html=wrapped, height=300)
                 if edited is not None:
                     st.session_state["corrected_text"] = edited
 
@@ -499,22 +556,37 @@ elif page == "main":
 
                     else:
                         clean_text = html_to_clean_text(st.session_state["corrected_text"])
-
-                        tokens = count_price(st.session_state["pending_input"], clean_text)
+                        if "original_input" not in st.session_state or not st.session_state["original_input"]:
+                            st.error("Original input is missing. Please resubmit your text.")
+                            st.session_state["confirming_purchase"] = False
+                            st.rerun()
+                            st.stop()
+                        tokens = count_price(st.session_state["original_input"], clean_text)
+                        available, _ = get_token(st.session_state['client_id'])
+                        if available < tokens:
+                            st.error(f"Not enough tokens to confirm edits. Required: {tokens}, Available: {available}")
+                            st.session_state["confirming_purchase"] = False
+                            st.rerun()
+                            st.stop()
                         st.warning(f"⚠️ This will cost you {tokens} tokens. Proceed?")
 
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("✅ Yes", key="confirm_yes"):
-                                update_token(
-                                    st.session_state['client_id'],
-                                    -tokens,  # subtract from available
-                                    tokens    # add to used
-                                )
-                                st.session_state["can_download"]        = True
-                                st.session_state["confirming_purchase"] = False
-                                st.session_state["tokens"]              = tokens
-                                st.rerun()
+                                try:
+                                    update_token(
+                                        st.session_state['client_id'],
+                                        -tokens,  # subtract from available
+                                        tokens    # add to used
+                                    )
+                                    st.session_state["can_download"]        = True
+                                    st.session_state["confirming_purchase"] = False
+                                    st.session_state["tokens"]              = tokens
+                                    st.rerun()
+                                except ValueError as e:
+                                    st.error(str(e))
+                                    st.session_state["confirming_purchase"] = False
+                                    st.rerun()
                         with c2:
                             if st.button("❌ No", key="confirm_no"):
                                 st.session_state["confirming_purchase"] = False
@@ -569,6 +641,7 @@ elif page == "main":
                             st.session_state["can_download"] = False
                             st.session_state["rendered_html"] = None
                             st.session_state["corrected_text"] = None
+                            st.session_state["original_input"] = None  # Clear original input
                             st.rerun()
                         else:
                             st.error("Not enough tokens to download the file.")
