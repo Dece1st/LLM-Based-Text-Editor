@@ -116,7 +116,7 @@ elif page == "moderation":
         st.title("🛠️ Moderation Panel")
         st.subheader("Pending Blacklist Submissions")
 
-        con = sqlite3.connect('account.db')
+        con = get_connection()
         cur = con.cursor()
         cur.execute("SELECT word FROM blacklist WHERE status = 'pending'")
         pending_words = cur.fetchall()
@@ -124,47 +124,62 @@ elif page == "moderation":
         if not pending_words:
             st.info("No pending words.")
         else:
-            for word_tuple in pending_words:
-                word = word_tuple[0]
+            for row in pending_words:
+                word = row['word']
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     st.write(f"🔸 {word}")
                 with col2:
                     if st.button("✅ Approve", key=f"approve_{word}"):
-                        cur.execute("UPDATE blacklist SET status = 'approved' WHERE word = ?", (word,))
+                        cur.execute(
+                            "UPDATE blacklist SET status = 'approved' WHERE word = %s",
+                            (word,)
+                        )
                         con.commit()
                         st.rerun()
                     if st.button("❌ Reject", key=f"reject_{word}"):
-                        cur.execute("DELETE FROM blacklist WHERE word = ?", (word,))
+                        cur.execute(
+                            "DELETE FROM blacklist WHERE word = %s",
+                            (word,)
+                        )
                         con.commit()
                         st.rerun()
-        
+
         st.subheader("Pending Paid User Requests")
         cur.execute("SELECT client_id, timestamp FROM upgrade")
-        request = cur.fetchall()
-        if request:
-            for name, timestamp in request:
-                ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+        requests = cur.fetchall()
+
+        if requests:
+            for row in requests:
+                name      = row['client_id']
+                ts_int    = row['timestamp']
+                ts_str    = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts_int))
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    st.write(f"🔸 User: {name} (Requested at: {ts})")
+                    st.write(f"🔸 User: {name} (Requested at: {ts_str})")
                 with col2:
                     if st.button("✅ Approve", key=f"approve_{name}"):
                         free_to_paid(name)
-                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (name,))
+                        cur.execute(
+                            "DELETE FROM upgrade WHERE client_id = %s",
+                            (name,)
+                        )
                         con.commit()
                         st.rerun()
                     if st.button("❌ Decline", key=f"decline_{name}"):
-                        cur.execute("DELETE FROM upgrade WHERE client_id = ?", (name,))
+                        cur.execute(
+                            "DELETE FROM upgrade WHERE client_id = %s",
+                            (name,)
+                        )
                         con.commit()
                         st.rerun()
         else:
             st.info("No pending requests.")
+
         con.close()
-        
+
         if st.button("Back to Main Page"):
             set_page("main")
-        
         if st.button("Logout"):
             logout_user()
 
@@ -174,22 +189,29 @@ elif page == "logs":
         set_page("main")
     else:
         st.title("📜 Censor Logs")
-        con = sqlite3.connect('account.db')
+
+        con = get_connection()
         cur = con.cursor()
-        cur.execute("SELECT user, original_word, timestamp FROM censor_log ORDER BY timestamp DESC")
+        cur.execute(
+            "SELECT user, original_word, timestamp "
+            "FROM censor_log "
+            "ORDER BY timestamp DESC"
+        )
         logs = cur.fetchall()
         con.close()
 
         if not logs:
             st.info("No censored words recorded.")
         else:
-            for user, word, ts in logs:
+            for row in logs:
+                user = row['user']
+                word = row['original_word']
+                ts   = row['timestamp']
                 ts_fmt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
                 st.write(f"🔸 `{word}` was submitted by **{user}** at `{ts_fmt}`")
-        
+
         if st.button("Back to Main Page"):
             set_page("main")
-        
         if st.button("Logout"):
             logout_user()
 

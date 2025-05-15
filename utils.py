@@ -1,66 +1,79 @@
 import streamlit as st
 import html as html_lib
-import ollama, sqlite3, hashlib, time, re, unicodedata, ftfy
+import ollama, hashlib, time, re, unicodedata, ftfy, os, psycopg2
 from difflib import SequenceMatcher
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+load_dotenv()
 
-# Set up database
+DB_URL = os.getenv("DATABASE_URL")
+def get_connection():
+    if not DB_URL:
+        raise RuntimeError("DATABASE_URL not set")
+    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+
 def set_db():
-    con = sqlite3.connect('account.db')
+    con = get_connection()
     cur = con.cursor()
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS account (
-            client_id TEXT PRIMARY KEY,
-            password TEXT,
-            type TEXT DEFAULT 'F'
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS token (
-            client_id TEXT PRIMARY KEY,
-            available INTEGER DEFAULT 0,
-            used INTEGER DEFAULT 0,
-            FOREIGN KEY (client_id) REFERENCES account(client_id)
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS blacklist (
-            word TEXT PRIMARY KEY,
-            status TEXT CHECK (status IN ('pending', 'approved')) DEFAULT 'pending'
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS censor_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user TEXT,
-            original_word TEXT,
-            timestamp INTEGER,
-            FOREIGN KEY (user) REFERENCES account(client_id)
-        )
-    ''')
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS lockout (
-            client_id TEXT PRIMARY KEY,
-            time      INTEGER DEFAULT 0
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS submission (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user TEXT,
-            original TEXT,
-            corrected TEXT,
-            error INTEGER,
-            timestamp INTEGER,
-            FOREIGN KEY (user) REFERENCES account(client_id)
-        )'''
-    )
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS upgrade (
-            client_id TEXT PRIMARY KEY,
-            timestamp INTEGER,
-            FOREIGN KEY (client_id) REFERENCES account(client_id)
-        )
-    ''')
+    # Accounts
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS account (
+        client_id TEXT PRIMARY KEY,
+        password  TEXT NOT NULL,
+        type      TEXT NOT NULL DEFAULT 'F'
+    );
+    """)
+    # Token balances
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS token (
+        client_id TEXT PRIMARY KEY REFERENCES account(client_id),
+        available INTEGER NOT NULL DEFAULT 0,
+        used      INTEGER NOT NULL DEFAULT 0
+    );
+    """)
+    # Blacklist
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS blacklist (
+        word   TEXT PRIMARY KEY,
+        status TEXT NOT NULL
+               CHECK (status IN ('pending','approved'))
+               DEFAULT 'pending'
+    );
+    """)
+    # Censor log
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS censor_log (
+        id            SERIAL PRIMARY KEY,
+        client_id     TEXT    NOT NULL REFERENCES account(client_id),
+        original_word TEXT    NOT NULL,
+        event_ts      BIGINT  NOT NULL
+    );
+    """)
+    # Lockouts
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS lockout (
+        client_id TEXT PRIMARY KEY REFERENCES account(client_id),
+        lock_ts   BIGINT NOT NULL DEFAULT 0
+    );
+    """)
+    # Submissions
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS submission (
+        id         SERIAL PRIMARY KEY,
+        client_id  TEXT    NOT NULL REFERENCES account(client_id),
+        original   TEXT    NOT NULL,
+        corrected  TEXT    NOT NULL,
+        error      INTEGER NOT NULL,
+        event_ts   BIGINT  NOT NULL
+    );
+    """)
+    # Upgrade requests
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS upgrade (
+        client_id TEXT PRIMARY KEY REFERENCES account(client_id),
+        req_ts    BIGINT NOT NULL
+    );
+    """)
     con.commit()
     con.close()
 
@@ -78,28 +91,40 @@ def hash_word(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 # Add user client_id and password to database
-def add_user(client_id, type, password):
-    con = sqlite3.connect('account.db')
+def add_user(client_id, user_type, password):
+    con = get_connection()
     cur = con.cursor()
     hash_password = hash_word(password)
     try:
-        cur.execute("INSERT INTO account (client_id, password, type) VALUES (?, ?, ?)", (client_id, hash_password, type))
+        cur.execute(
+            "INSERT INTO account (client_id, password, type) VALUES (%s, %s, %s)",
+            (client_id, hash_password, user_type)
+        )
         con.commit()
         return True
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
+        # duplicate primary key or other constraint failure
         return False
     finally:
         con.close()
 
-# Check if user is already registered
+
 def search_user(client_id, password):
-    con = sqlite3.connect('account.db')
+    con = get_connection()
     cur = con.cursor()
     hash_password = hash_word(password)
-    cur.execute("SELECT type FROM account WHERE client_id = ? AND password = ?", (client_id, hash_password))
-    result = cur.fetchone()
+    cur.execute(
+        "SELECT type FROM account WHERE client_id = %s AND password = %s",
+        (client_id, hash_password)
+    )
+    row = cur.fetchone()
     con.close()
-    return result[0] if result else None
+    if not row:
+        return None
+    # Handle both dict‐ and tuple‐style cursors
+    if isinstance(row, dict):
+        return row.get("type")
+    return row[0]
 
 # Logout user session and redirect to login page
 def logout_user():
@@ -112,56 +137,94 @@ def logout_user():
     st.session_state['user_input'] = None
     set_page("login")
 
-# Convert free user to paid user
 def free_to_paid(client_id):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("UPDATE account SET type = 'P' WHERE client_id = ?", (client_id,))
-    cur.execute("INSERT INTO token (client_id, available, used) VALUES (?, ?, ?)", (client_id, 0, 0))
-    con.commit()
-    con.close()
-
-# Convert free user to super user (for testing)
-def free_to_super(client_id):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("UPDATE account SET type = 'S' WHERE client_id = ?", (client_id,))
-    con.commit()
-    con.close()
-
-# Submit free to paid user conversion request
-def request_free_to_paid(client_id):
-    con = sqlite3.connect('account.db')
+    con = get_connection()
     cur = con.cursor()
     try:
-        cur.execute("INSERT INTO upgrade (client_id, timestamp) VALUES (?, ?)", (client_id, int(time.time())))
+        # 1) mark them Paid
+        cur.execute(
+            "UPDATE account SET type = 'P' WHERE client_id = %s",
+            (client_id,)
+        )
+        # 2) create their token row
+        cur.execute(
+            "INSERT INTO token (client_id, available, used) VALUES (%s, %s, %s)",
+            (client_id, 0, 0)
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def free_to_super(client_id):
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        cur.execute(
+            "UPDATE account SET type = 'S' WHERE client_id = %s",
+            (client_id,)
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def request_free_to_paid(client_id) -> bool:
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO upgrade (client_id, req_ts) VALUES (%s, %s)",
+            (client_id, int(time.time()))
+        )
         con.commit()
         return True
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         return False
     finally:
         con.close()
 
-# Get token information from user account
-def get_token(client_id):
-    con = sqlite3.connect('account.db')
+def get_token(client_id: str) -> tuple[int,int]:
+    con = get_connection()
     cur = con.cursor()
-    cur.execute("SELECT available, used FROM token WHERE client_id = ?", (client_id,))
-    result = cur.fetchone()
-    con.close()
-    return result if result else (0, 0)
-
-# Update token to user account
-def update_token(client_id, available, used):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    # make sure there’s a row to update
-    cur.execute("INSERT OR IGNORE INTO token (client_id) VALUES (?)", (client_id,))
     cur.execute(
-        "UPDATE token "
-        "SET available = available + ?, "
-            "used      = used      + ? "
-        "WHERE client_id = ?", (available, used, client_id)
+        "SELECT available, used FROM token WHERE client_id = %s",
+        (client_id,)
+    )
+    row = cur.fetchone()
+    con.close()
+
+    if not row:
+        return (0, 0)
+
+    # If using RealDictCursor, row will be a dict:
+    if isinstance(row, dict):
+        return (row["available"], row["used"])
+    # Otherwise it's a tuple
+    return row
+
+
+def update_token(client_id: str, available: int, used: int) -> None:
+    con = get_connection()
+    cur = con.cursor()
+    # upsert the row if it doesn't exist yet
+    cur.execute(
+        """
+        INSERT INTO token (client_id)
+             VALUES (%s)
+        ON CONFLICT (client_id) DO NOTHING
+        """,
+        (client_id,)
+    )
+    # now apply the delta
+    cur.execute(
+        """
+        UPDATE token
+           SET available = available + %s,
+               used      = used      + %s
+         WHERE client_id = %s
+        """,
+        (available, used, client_id)
     )
     con.commit()
     con.close()
@@ -179,11 +242,6 @@ def show_paid_user_metrics(client_id):
 
 
 def count_price(orig: str, final: str) -> int:
-    """
-    Charges:
-      - for deletions: number of words removed,
-      - for inserts/replaces: number of words in the final (corrected) phrase.
-    """
     orig = normalize_punctuation(orig)
     final = normalize_punctuation(final)
     a = orig.split()
@@ -198,60 +256,108 @@ def count_price(orig: str, final: str) -> int:
                 cost += (j2 - j1)
     return cost
 
-# Get lockout information for free user
-def get_lockout(client_id):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("SELECT time FROM lockout WHERE client_id = ?", (client_id,))
-    result = cur.fetchone()
-    con.close()
-    return result[0] if result else 0
-
-# Update lockout for free user
-def set_lockout(client_id, duration):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    lock_time = int(time.time()) + duration
-    cur.execute("INSERT INTO lockout (client_id, time) VALUES (?, ?)", (client_id, lock_time))
-    con.commit()
-    con.close()
-
-# Remove lockout for free user
-def remove_lockout(client_id):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("DELETE FROM lockout WHERE client_id = ?", (client_id,))
-    con.commit()
-    con.close()
-
-# Get submission history for paid user
-def get_submission(user):
-    con = sqlite3.connect('account.db')
-    cur = con.cursor()
-    cur.execute("SELECT original, corrected, error, timestamp FROM submission WHERE user = ? ORDER BY timestamp DESC", (user,))
-    hist = cur.fetchall()
-    con.close()
-    return hist
-
-# Add submission to history
-def set_submission(user, original, corrected, error):
-    con = sqlite3.connect('account.db')
+def get_lockout(client_id: str) -> int:
+    con = get_connection()
     cur = con.cursor()
     cur.execute(
-        "INSERT INTO submission (user, original, corrected, error, timestamp) VALUES (?, ?, ?, ?, ?)",
-        (user, original, corrected, error, int(time.time()))
+        "SELECT lock_ts FROM lockout WHERE client_id = %s",
+        (client_id,)
+    )
+    row = cur.fetchone()
+    con.close()
+
+    if not row:
+        return 0
+    # RealDictCursor returns a dict
+    if isinstance(row, dict):
+        return row["lock_ts"]
+    # otherwise a tuple
+    return row[0]
+
+
+def set_lockout(client_id: str, duration: int) -> None:
+    lock_time = int(time.time()) + duration
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO lockout (client_id, lock_ts)
+             VALUES (%s, %s)
+        ON CONFLICT (client_id) DO UPDATE
+          SET lock_ts = EXCLUDED.lock_ts
+        """,
+        (client_id, lock_time)
     )
     con.commit()
     con.close()
 
-# Count the number of correction for paid user
-def count_correction(client_id):
-    con = sqlite3.connect('account.db')
+
+def remove_lockout(client_id: str) -> None:
+    con = get_connection()
     cur = con.cursor()
-    cur.execute("SELECT COUNT(*) FROM submission WHERE user = ?", (client_id,))
-    count = cur.fetchone()[0]
+    cur.execute(
+        "DELETE FROM lockout WHERE client_id = %s",
+        (client_id,)
+    )
+    con.commit()
     con.close()
-    return count
+
+
+def get_submission(client_id: str) -> list[tuple]:
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT original, corrected, error, event_ts
+          FROM submission
+         WHERE client_id = %s
+      ORDER BY event_ts DESC
+        """,
+        (client_id,)
+    )
+    rows = cur.fetchall()
+    con.close()
+
+    # if rows are dicts, convert to tuples
+    out = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append((row["original"], row["corrected"], row["error"], row["event_ts"]))
+        else:
+            out.append(tuple(row))
+    return out
+
+
+def set_submission(client_id: str, original: str, corrected: str, error: int) -> None:
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO submission
+            (client_id, original, corrected, error, event_ts)
+         VALUES (%s, %s, %s, %s, %s)
+        """,
+        (client_id, original, corrected, error, int(time.time()))
+    )
+    con.commit()
+    con.close()
+
+
+def count_correction(client_id: str) -> int:
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM submission WHERE client_id = %s",
+        (client_id,)
+    )
+    row = cur.fetchone()
+    con.close()
+    # handle RealDictCursor
+    if isinstance(row, dict):
+        # psycopg2 RealDictCursor returns {'count': 123}
+        # note: key might be 'count' or '?column?' depending on driver
+        return int(next(iter(row.values())))
+    return row[0]
 
 # No special characters for punctuation
 def normalize_punctuation(text: str) -> str:
@@ -268,11 +374,10 @@ def html_to_clean_text(html_data: str) -> str:
     lines = [" ".join(line.split()) for line in text.splitlines()]
     return "\n\n".join([ln for ln in lines if ln.strip()])
 
-# LLM text correction
 def correct_text(user_input):
     try:
         # Load approved blacklist words
-        con = sqlite3.connect('account.db')
+        con = get_connection()
         cur = con.cursor()
         cur.execute("SELECT word FROM blacklist WHERE status = 'approved'")
         blacklisted = {row[0] for row in cur.fetchall()}
@@ -306,26 +411,33 @@ def correct_text(user_input):
             model="mistral",
             prompt=f"{LLM_instruction}\n\nInput: {user_input}\n\nOutput:",
             options={
-                "temperature": 0.0,    # 0 creativity
-                "top_p": 1.0,    # deterministic output
+                "temperature": 0.0,
+                "top_p": 1.0,
                 "max_tokens": 1024
             }
         )
         output = resp['response'].strip()
-        
+
+        # Paid‐user token accounting & history
         if st.session_state['type'] == 'P':
             update_token(st.session_state['client_id'], -word_count, word_count)
             grammar_error = user_input.strip() != output.strip()
-            set_submission(st.session_state['client_id'], user_input, output, 1 if grammar_error else 0)
+            set_submission(
+                st.session_state['client_id'],
+                user_input,
+                output,
+                1 if grammar_error else 0
+            )
             if word_count > 10 and not grammar_error:
                 update_token(st.session_state['client_id'], 3, 0)
                 st.success("No error found. Awarded 3 bonus tokens.")
 
-        user_input = normalize_punctuation(user_input)
-        output = normalize_punctuation(output)
+        # Prepare diff/HTML
+        orig_text = normalize_punctuation(user_input)
+        corr_text = normalize_punctuation(output)
 
-        orig_paras = user_input.strip().split("\n\n")
-        corr_paras = output.strip().split("\n\n")
+        orig_paras = orig_text.strip().split("\n\n")
+        corr_paras = corr_text.strip().split("\n\n")
 
         html_body = ""
         to_log    = []
@@ -335,7 +447,7 @@ def correct_text(user_input):
             for o_line, c_line in zip(orig_lines, corr_lines):
                 o_words = o_line.split()
                 c_words = c_line.split()
-                diff = SequenceMatcher(None, o_words, c_words)
+                diff    = SequenceMatcher(None, o_words, c_words)
                 for tag, o1, o2, c1, c2 in diff.get_opcodes():
                     if tag == 'equal':
                         html_body += " ".join(c_words[c1:c2]) + " "
@@ -348,10 +460,8 @@ def correct_text(user_input):
                             if clean in blacklisted:
                                 to_log.append(clean)
                                 segment = segment.replace(w, "***")
-
                         orig_esc = html_lib.escape(original, quote=True)
                         seg_esc  = html_lib.escape(segment,  quote=True)
-
                         html_body += (
                             f'<span class="toggle" '
                             f'data-original="{orig_esc}" '
@@ -366,24 +476,24 @@ def correct_text(user_input):
 
         # Log any censored words
         if to_log:
-            con = sqlite3.connect('account.db')
+            con = get_connection()
             cur = con.cursor()
             for w in set(to_log):
                 cur.execute(
-                    "INSERT INTO censor_log (user, original_word, timestamp) VALUES (?, ?, ?)",
+                    """
+                    INSERT INTO censor_log (client_id, original_word, event_ts)
+                         VALUES (%s, %s, %s)
+                    """,
                     (st.session_state['client_id'], w, int(time.time()))
                 )
             con.commit()
             con.close()
 
-        # Save into session
+        # Finalize session state
         html_body = re.sub(r'(<br>\s*)+$', '', html_body)
         st.session_state["rendered_html"] = f"<div>{html_body}</div>"
-        # Build plain text preserving paragraphs
-        plain = output.split("\n\n")
-        joined = "\n\n".join(plain)
-        st.session_state["corrected_text"] = joined
-        st.session_state["can_download"] = False
+        st.session_state["corrected_text"] = "\n\n".join(output.split("\n\n"))
+        st.session_state["can_download"]    = False
 
     except Exception:
         st.error("❌ Failed to connect to the language model. Please try again.")
@@ -410,15 +520,26 @@ def submit_blacklist_word(word: str):
     if not word:
         st.warning("Input can't be empty.")
         return
-    con = sqlite3.connect('account.db')
+
+    con = get_connection()
     cur = con.cursor()
-    cur.execute("SELECT 1 FROM blacklist WHERE word = ?", (word,))
-    if cur.fetchone():
+    # Try to insert; if it already exists, no-op
+    cur.execute(
+        """
+        INSERT INTO blacklist (word, status)
+             VALUES (%s, 'pending')
+        ON CONFLICT (word) DO NOTHING
+        """,
+        (word,)
+    )
+
+    if cur.rowcount == 0:
+        # rowcount==0 means the INSERT was skipped due to conflict
         st.info("This word has already been submitted.")
     else:
-        cur.execute("INSERT INTO blacklist (word, status) VALUES (?, 'pending')", (word,))
         con.commit()
         st.success("Submitted for review.")
+
     con.close()
 
 ######## CSS Style for Corrected Text Box ########
