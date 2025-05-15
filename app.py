@@ -183,7 +183,7 @@ elif page == "moderation":
 
         con.close()
 
-        if st.button("Back to Main Page"):
+        if st.button("◀️ Back to Main Page"):
             set_page("main")
         if st.button("Logout"):
             logout_user()
@@ -215,7 +215,7 @@ elif page == "logs":
                 ts_fmt  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
                 st.write(f"🔸 `{word}` was submitted by **{user}** at `{ts_fmt}`")
 
-        if st.button("Back to Main Page"):
+        if st.button("◀️ Back to Main Page"):
             set_page("main")
         if st.button("Logout"):
             logout_user()
@@ -243,7 +243,7 @@ elif page == "history":
                         st.markdown("Corrected Text")
                         st.text_area("", corrected, height=150, disabled=True, key=f"corrected_{timestamp}")
         
-        if st.button("Back to Main Page"):
+        if st.button("◀️ Back to Main Page"):
             set_page("main")
         
         if st.button("Logout"):
@@ -252,17 +252,25 @@ elif page == "history":
 elif page == "collab":
     # boost the max-width of the main content only on this page
     st.markdown("""<style> .block-container {max-width: 1600px;} </style>""", unsafe_allow_html=True)
+    file_id       = st.session_state.get("current_file")
+    orig_key      = f"collab_orig_{file_id}"
+    rendered_key  = f"collab_html_{file_id}"
+    clean_key     = f"collab_clean_{file_id}"
+
     st.header("🤝 Collaborative Editor")
 
     file_id = st.session_state.get("current_file")
     if file_id is None:
         st.error("No document selected. Go back to 📁 My Documents.")
         if st.button("◀️ Back to Main"):
+            st.session_state.pop("current_file", None)
             set_page("main")
         st.stop()
 
     orig_key = f"collab_orig_{file_id}"
-    orig = st.session_state.get(orig_key, st.session_state.get("pending_input", ""))
+    orig     = st.session_state.get(orig_key)
+    if orig is None:
+        orig = get_file_content(file_id)
 
     left, right = st.columns(2)
 
@@ -277,17 +285,17 @@ elif page == "collab":
         if st.button("🔄 Submit for correction"):
             st.session_state[orig_key] = new_orig
             correct_text(new_orig)
+            st.session_state[rendered_key] = st.session_state["rendered_html"]
+            st.session_state[clean_key]    = st.session_state["corrected_text"]
             st.rerun()
 
     with right:
         st.subheader("✅ Agreed-Upon Text")
-        if st.session_state.get("rendered_html"):
-            wrapped = wrap_scrollable(st.session_state["rendered_html"])
-            edited = html_viewer(html=wrapped, height=400)
-            if edited is not None:
-                st.session_state["corrected_text"] = edited
-        else:
-            st.info("No correction yet—click “Submit for correction” on the left.")
+        html_blob = st.session_state.get(rendered_key, "")
+        wrapped   = wrap_scrollable(html_blob, max_height=400)
+        edited    = html_viewer(html=wrapped, height=400)
+        if edited is not None:
+            st.session_state[clean_key] = edited
 
     if st.button("◀️ Back to Main"):
         set_page("main")
@@ -543,8 +551,8 @@ elif page == "main":
             if st.session_state.get("rendered_html") and not st.session_state.get("can_download"):
                 st.subheader("✅ Corrected Text")
                 raw = st.session_state["rendered_html"]
-                wrapped = wrap_scrollable(raw)
-                edited = html_viewer(html=wrapped, height=300)
+                wrapped = wrap_scrollable(raw, max_height=255)
+                edited  = html_viewer(html=wrapped, height=255)
                 if edited is not None:
                     st.session_state["corrected_text"] = edited
 
@@ -558,19 +566,26 @@ elif page == "main":
                         st.markdown("⚠️ Pressing this will lock further edits.", unsafe_allow_html=True)
 
                     else:
+                        # clean up the HTML into plain text
                         clean_text = html_to_clean_text(st.session_state["corrected_text"])
-                        if "original_input" not in st.session_state or not st.session_state["original_input"]:
+
+                        # figure out the original text to compare against
+                        orig = st.session_state.get("original_input") or st.session_state.get("pending_input")
+                        if not orig:
                             st.error("Original input is missing. Please resubmit your text.")
                             st.session_state["confirming_purchase"] = False
                             st.rerun()
                             st.stop()
-                        tokens = count_price(st.session_state["original_input"], clean_text)
+
+                        # count how many tokens this change will cost
+                        tokens = count_price(orig, clean_text)
                         available, _ = get_token(st.session_state['client_id'])
                         if available < tokens:
                             st.error(f"Not enough tokens to confirm edits. Required: {tokens}, Available: {available}")
                             st.session_state["confirming_purchase"] = False
                             st.rerun()
                             st.stop()
+
                         st.warning(f"⚠️ This will cost you {tokens} tokens. Proceed?")
 
                         c1, c2 = st.columns(2)
@@ -582,9 +597,11 @@ elif page == "main":
                                         -tokens,  # subtract from available
                                         tokens    # add to used
                                     )
+                                    # now allow download and reset for a fresh file next time
                                     st.session_state["can_download"]        = True
                                     st.session_state["confirming_purchase"] = False
                                     st.session_state["tokens"]              = tokens
+                                    st.session_state.pop("current_file", None)
                                     st.rerun()
                                 except ValueError as e:
                                     st.error(str(e))
@@ -605,13 +622,15 @@ elif page == "main":
 
                     file_id = st.session_state.get("current_file")
                     if file_id is None:
-                        # first time through, create a new file for this document
                         title = st.text_input("Document title", value="Untitled", key="doc_title")
                         if st.button("Initialize File"):
                             fid = create_file(
                                 owner=st.session_state["name"],
                                 title=title
                             )
+                            # immediately write the confirmed text into the DB
+                            clean = html_to_clean_text(st.session_state["corrected_text"])
+                            update_file_content(fid, clean)
                             st.session_state["current_file"] = fid
                             st.rerun()
                         st.stop()  # wait for the user to initialize

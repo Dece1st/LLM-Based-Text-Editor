@@ -82,6 +82,7 @@ def set_db():
       file_id     SERIAL PRIMARY KEY,
       owner       TEXT NOT NULL REFERENCES account(client_id),
       title       TEXT,
+      content     TEXT NOT NULL DEFAULT '',
       created_ts  BIGINT NOT NULL
     );
     """)
@@ -608,39 +609,41 @@ def submit_blacklist_word(word: str):
     con.close()
 
 #--- CSS Style for Corrected Text Box ---#
-SCROLLABLE_CSS = """
-<style>
-.scrollable {
-    background-color: #262730;
-    border: 1px solid #1D751D;
-    border-radius: 8px;
-    padding: 8px;
-    max-height: 300px;
-    overflow-y: auto;
-    user-select: none;
-}
-/* Chrome, Edge, Safari */
-.scrollable::-webkit-scrollbar {
-    width: 6px;
-}
-.scrollable::-webkit-scrollbar-track {
-    background: #262730;
-    border-radius: 3px;
-}
-.scrollable::-webkit-scrollbar-thumb {
-    background-color: #7B7B81;
-    border-radius: 3px;
-}
-/* Firefox */
-.scrollable {
-    scrollbar-width: thin;
-    scrollbar-color: #7B7B81 #262730;
-}
-</style>
-"""
-
-def wrap_scrollable(raw_html: str) -> str:
-    return f"{SCROLLABLE_CSS}<div class='scrollable'>{raw_html}</div>"
+def wrap_scrollable(raw_html: str, max_height: int = 300) -> str:
+    """
+    Wrap `raw_html` in a scrollable div with a configurable max-height.
+    """
+    css = f"""
+    <style>
+    .scrollable {{
+        background-color: #262730;
+        border: 1px solid #1D751D;
+        border-radius: 8px;
+        padding: 8px;
+        max-height: {max_height}px;
+        overflow-y: auto;
+        user-select: none;
+    }}
+    /* Chrome, Edge, Safari */
+    .scrollable::-webkit-scrollbar {{
+        width: 6px;
+    }}
+    .scrollable::-webkit-scrollbar-track {{
+        background: #262730;
+        border-radius: 3px;
+    }}
+    .scrollable::-webkit-scrollbar-thumb {{
+        background-color: #7B7B81;
+        border-radius: 3px;
+    }}
+    /* Firefox */
+    .scrollable {{
+        scrollbar-width: thin;
+        scrollbar-color: #7B7B81 #262730;
+    }}
+    </style>
+    """
+    return f"{css}<div class='scrollable'>{raw_html}</div>"
 
 def create_file(owner: str, title: str) -> int:
     """
@@ -799,3 +802,28 @@ def list_files_for(user: str) -> list[dict]:
         {"file_id": r["file_id"], "title": r["title"], "owner": r["owner"], "created_ts": r["created_ts"]}
         for r in rows
     ]
+
+def update_file_content(file_id: int, content: str) -> None:
+    """Overwrite the ‘content’ column for this file."""
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        "UPDATE file SET content = %s WHERE file_id = %s",
+        (content, file_id)
+    )
+    con.commit()
+    con.close()
+
+def get_file_content(file_id: int) -> str:
+    """Fetch the latest content for this file, or empty string."""
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT content FROM file WHERE file_id = %s",
+        (file_id,)
+    )
+    row = cur.fetchone()
+    con.close()
+    if not row:
+        return ""
+    return row["content"] if isinstance(row, dict) else row[0]
