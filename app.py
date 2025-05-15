@@ -109,10 +109,6 @@ elif page == "signup":
         st.session_state['auth_stat'] = None
         set_page("login")
 
-    if submitted_login:
-        st.session_state['auth_stat'] = None
-        set_page("login")
-
 elif page == "moderation":
     if st.session_state['type'] != 'S':
         st.error("Access denied.")
@@ -212,7 +208,7 @@ elif page == "logs":
                 user    = row['user']
                 word    = row['original_word']
                 ts      = row['event_ts']
-                ts_fmt  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
+                ts_fmt  = time.strftime('%Y-%m-d %H:%M:%S', time.localtime(ts))
                 st.write(f"🔸 `{word}` was submitted by **{user}** at `{ts_fmt}`")
 
         if st.button("◀️ Back to Main Page"):
@@ -468,6 +464,14 @@ elif page == "main":
 
             if st.session_state.get("pending_self_correction"):
                 st.subheader("Self-Correction")
+                # Display highlighted incorrect words
+                if st.session_state.get("rendered_html"):
+                    st.markdown("### Text with Incorrect Words Highlighted")
+                    raw = st.session_state["rendered_html"]
+                    wrapped = wrap_scrollable(raw, max_height=255)
+                    st.markdown("Words in green contain grammatical errors. Edit them below.")
+                    html_viewer(html=wrapped, height=255)
+                
                 self_corrected = st.text_area(
                     "Edit your text below:",
                     value=st.session_state["self_corrected_text"],
@@ -498,6 +502,7 @@ elif page == "main":
                                 st.session_state["pending_self_correction"] = False
                                 st.session_state["self_corrected_text"] = None
                                 st.session_state["tokens"] = tokens
+                                st.session_state["rendered_html"] = None  # Clear highlighted text
                                 st.success(f"💰 Deducted {tokens} tokens for self-correction.")
                                 st.rerun()
                             else:
@@ -508,6 +513,7 @@ elif page == "main":
                     if st.button("Cancel", key="cancel_self_correction"):
                         st.session_state["pending_self_correction"] = False
                         st.session_state["self_corrected_text"] = None
+                        st.session_state["rendered_html"] = None  # Clear highlighted text
                         st.rerun()
             
             # ─── Confirmation UI for paid users ───
@@ -529,6 +535,7 @@ elif page == "main":
                         else:
                             st.session_state["self_corrected_text"] = st.session_state["pending_input"]
                             st.session_state["user_input"] = st.session_state["pending_input"]
+                            correct_text(st.session_state["pending_input"], self_correction=True)  # Highlight errors
                             st.session_state["pending_self_correction"] = True
                         # clear the pending flags
                         for k in ("pending_submit", "pending_count", "pending_correction_type", "pending_input"):
@@ -548,7 +555,7 @@ elif page == "main":
                 st.success(st.session_state["downloaded_success"])
                 del st.session_state["downloaded_success"]
 
-            if st.session_state.get("rendered_html") and not st.session_state.get("can_download"):
+            if st.session_state.get("rendered_html") and not st.session_state.get("can_download") and not st.session_state.get("pending_self_correction"):
                 st.subheader("✅ Corrected Text")
                 raw = st.session_state["rendered_html"]
                 wrapped = wrap_scrollable(raw, max_height=255)

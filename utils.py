@@ -140,7 +140,6 @@ def add_user(client_id, user_type, password):
     finally:
         con.close()
 
-
 def search_user(client_id, password):
     con = get_connection()
     cur = con.cursor()
@@ -187,7 +186,6 @@ def free_to_paid(client_id):
     finally:
         con.close()
 
-
 def free_to_super(client_id):
     con = get_connection()
     cur = con.cursor()
@@ -199,7 +197,6 @@ def free_to_super(client_id):
         con.commit()
     finally:
         con.close()
-
 
 def request_free_to_paid(client_id) -> bool:
     con = get_connection()
@@ -234,7 +231,6 @@ def get_token(client_id: str) -> tuple[int,int]:
         return (row["available"], row["used"])
     # Otherwise it's a tuple
     return row
-
 
 def update_token(client_id: str, available: int, used: int) -> None:
     con = get_connection()
@@ -282,7 +278,6 @@ def show_paid_user_metrics(client_id):
         st.metric("Used Tokens", used)
     with c3:
         st.metric("Corrections", corrections)
-
 
 def count_price(orig: str, final: str) -> int:
     orig = normalize_punctuation(orig)
@@ -332,7 +327,6 @@ def get_lockout(client_id: str) -> int:
     # otherwise a tuple
     return row[0]
 
-
 def set_lockout(client_id: str, duration: int) -> None:
     lock_time = int(time.time()) + duration
     con = get_connection()
@@ -349,7 +343,6 @@ def set_lockout(client_id: str, duration: int) -> None:
     con.commit()
     con.close()
 
-
 def remove_lockout(client_id: str) -> None:
     con = get_connection()
     cur = con.cursor()
@@ -359,7 +352,6 @@ def remove_lockout(client_id: str) -> None:
     )
     con.commit()
     con.close()
-
 
 def get_submission(client_id: str) -> list[tuple]:
     con = get_connection()
@@ -385,7 +377,6 @@ def get_submission(client_id: str) -> list[tuple]:
             out.append(tuple(row))
     return out
 
-
 def set_submission(client_id: str, original: str, corrected: str, error: int) -> None:
     con = get_connection()
     cur = con.cursor()
@@ -399,7 +390,6 @@ def set_submission(client_id: str, original: str, corrected: str, error: int) ->
     )
     con.commit()
     con.close()
-
 
 def count_correction(client_id: str) -> int:
     con = get_connection()
@@ -432,7 +422,7 @@ def html_to_clean_text(html_data: str) -> str:
     lines = [" ".join(line.split()) for line in text.splitlines()]
     return "\n\n".join([ln for ln in lines if ln.strip()])
 
-def correct_text(user_input):
+def correct_text(user_input, self_correction=False):
     try:
         # Load approved blacklist words
         con = get_connection()
@@ -444,24 +434,42 @@ def correct_text(user_input):
         # Token use
         word_count = len(user_input.strip().split())
 
-        # Query LLM
+        # Common LLM instruction
         LLM_instruction = '''
             You are a grammar checker.
-            Your task is to output the input text with any grammatical errors corrected, preserving the original intent and structure.
-            Correct only grammatical errors such as subject-verb agreement, article usage, verb tense.
-            Example: Input 'I is an student.', output 'I am a student.'.
-            If the input has no grammatical errors, output it unchanged.
-            Example: Input 'I am fine.', output 'I am fine.'.
+            Your task is to identify grammatical errors in the input text, such as subject-verb agreement, article usage, or verb tense.
+            Example: In 'I is an student.', errors are 'is' (should be 'am') and 'an student' (should be 'a student').
             Preserve contractions, slang, swear words, formality, tone, spelling, punctuation, and style if they are grammatically correct.
             Preserve original paragraph breaks, separating each paragraph with a blank line.
-            If the input is a question, command, or prompt, output it unchanged unless it contains grammatical errors.
-            Example: Input 'What is your model name?', output 'What is your model name?'.
+            If the input is a question, command, or prompt, process it only if it contains grammatical errors.
+            Example: Input 'What is your model name?', output unchanged unless errors exist.
             Do not solve equations, answer questions, respond to prompts, or interpret mathematical expressions.
-            Example: Input '2 + 2 = ?', output '2 + 2 = ?', do not output '2 + 2 = 4'.
+            Example: Input '2 + 2 = ?', output '2 + 2 = ?'.
             If the input is ambiguous, incomplete, or lacks clear textual content, output it unchanged unless grammatical corrections apply.
             Example: Input 'a', output 'a'.
-            Output only the corrected or unchanged input text. Do not provide explanations, comments, conversational responses, or additional content.
             Do not act as a chatbot, calculator, or problem solver.
+        '''
+
+        if self_correction:
+            # Modified instruction for self-correction: identify errors only
+            LLM_instruction += '''
+                For each word or phrase with a grammatical error, output the original word or phrase exactly as it appears in the input.
+                Output format: List each erroneous word or phrase on a new line.
+                Example:
+                Input: I is an student.
+                Output:
+                is
+                an student
+                If no errors, output nothing.
+            '''
+        else:
+            # Standard instruction for LLM correction
+            LLM_instruction += '''
+                Output the input text with any grammatical errors corrected, preserving the original intent and structure.
+                Example: Input 'I is an student.', output 'I am a student.'.
+                If the input has no grammatical errors, output it unchanged.
+                Example: Input 'I am fine.', output 'I am fine.'.
+                Output only the corrected or unchanged input text. Do not provide explanations, comments, or additional content.
             '''
 
         # Generate response
@@ -485,58 +493,102 @@ def correct_text(user_input):
                 st.session_state["corrected_text"] = None
                 st.stop()
             update_token(st.session_state['client_id'], -word_count, word_count)
-            grammar_error = user_input.strip() != output.strip()
-            set_submission(
-                st.session_state['client_id'],
-                user_input,
-                output,
-                1 if grammar_error else 0
-            )
-            if word_count > 10 and not grammar_error:
-                update_token(st.session_state['client_id'], 3, 0)
-                st.success("No error found. Awarded 3 bonus tokens.")
+            if not self_correction:
+                grammar_error = user_input.strip() != output.strip()
+                set_submission(
+                    st.session_state['client_id'],
+                    user_input,
+                    output,
+                    1 if grammar_error else 0
+                )
+                if word_count > 10 and not grammar_error:
+                    update_token(st.session_state['client_id'], 3, 0)
+                    st.success("No error found. Awarded 3 bonus tokens.")
 
         # Prepare diff/HTML
         orig_text = normalize_punctuation(user_input)
-        corr_text = normalize_punctuation(output)
-
         orig_paras = orig_text.strip().split("\n\n")
-        corr_paras = corr_text.strip().split("\n\n")
-
         html_body = ""
-        to_log    = []
-        for orig_para, corr_para in zip(orig_paras, corr_paras):
-            orig_lines = orig_para.splitlines()
-            corr_lines = corr_para.splitlines()
-            for o_line, c_line in zip(orig_lines, corr_lines):
-                o_words = o_line.split()
-                c_words = c_line.split()
-                diff    = SequenceMatcher(None, o_words, c_words)
-                for tag, o1, o2, c1, c2 in diff.get_opcodes():
-                    if tag == 'equal':
-                        html_body += " ".join(c_words[c1:c2]) + " "
-                    else:
-                        segment  = " ".join(c_words[c1:c2])
-                        original = " ".join(o_words[o1:o2])
-                        # log blacklisted
-                        for w in c_words[c1:c2]:
-                            clean = re.sub(r'\W+', '', w).lower()
+        to_log = []
+
+        if self_correction:
+            # Highlight erroneous words/phrases
+            error_words = output.splitlines() if output else []
+            for para in orig_paras:
+                lines = para.splitlines()
+                for line in lines:
+                    words = line.split()
+                    i = 0
+                    while i < len(words):
+                        matched = False
+                        for err in error_words:
+                            err_len = len(err.split())
+                            if i + err_len <= len(words):
+                                phrase = " ".join(words[i:i + err_len])
+                                if phrase == err:
+                                    # Highlight the erroneous phrase
+                                    phrase_esc = html_lib.escape(phrase, quote=True)
+                                    html_body += (
+                                        f'<span class="toggle" '
+                                        f'data-original="{phrase_esc}" '
+                                        f'style="background:#2EBD2E; border-radius:8px; '
+                                        f'padding:4px; display:inline-block; cursor:pointer; '
+                                        f'font-size:16px; color:white;">'
+                                        f'{phrase_esc}</span> '
+                                    )
+                                    i += err_len
+                                    matched = True
+                                    break
+                        if not matched:
+                            # Non-erroneous word
+                            word = words[i]
+                            # Check for blacklisted words
+                            clean = re.sub(r'\W+', '', word).lower()
                             if clean in blacklisted:
                                 to_log.append(clean)
-                                segment = segment.replace(w, "***")
-                        orig_esc = html_lib.escape(original, quote=True)
-                        seg_esc  = html_lib.escape(segment,  quote=True)
-                        html_body += (
-                            f'<span class="toggle" '
-                            f'data-original="{orig_esc}" '
-                            f'data-corrected="{seg_esc}" '
-                            f'style="background:#2EBD2E; border-radius:8px; '
-                            f'padding:4px; display:inline-block; cursor:pointer; '
-                            f'font-size:16px; color:white;">'
-                            f'{seg_esc}</span> '
-                        )
+                                word = "***"
+                            html_body += html_lib.escape(word, quote=True) + " "
+                            i += 1
+                    html_body += "<br>"
                 html_body += "<br>"
-            html_body += "<br>"
+            st.session_state["corrected_text"] = user_input  # Keep original for editing
+        else:
+            # Standard LLM correction
+            corr_text = normalize_punctuation(output)
+            corr_paras = corr_text.strip().split("\n\n")
+            for orig_para, corr_para in zip(orig_paras, corr_paras):
+                orig_lines = orig_para.splitlines()
+                corr_lines = corr_para.splitlines()
+                for o_line, c_line in zip(orig_lines, corr_lines):
+                    o_words = o_line.split()
+                    c_words = c_line.split()
+                    diff = SequenceMatcher(None, o_words, c_words)
+                    for tag, o1, o2, c1, c2 in diff.get_opcodes():
+                        if tag == 'equal':
+                            html_body += " ".join(c_words[c1:c2]) + " "
+                        else:
+                            segment = " ".join(c_words[c1:c2])
+                            original = " ".join(o_words[o1:o2])
+                            # log blacklisted
+                            for w in c_words[c1:c2]:
+                                clean = re.sub(r'\W+', '', w).lower()
+                                if clean in blacklisted:
+                                    to_log.append(clean)
+                                    segment = segment.replace(w, "***")
+                            orig_esc = html_lib.escape(original, quote=True)
+                            seg_esc = html_lib.escape(segment, quote=True)
+                            html_body += (
+                                f'<span class="toggle" '
+                                f'data-original="{orig_esc}" '
+                                f'data-corrected="{seg_esc}" '
+                                f'style="background:#2EBD2E; border-radius:8px; '
+                                f'padding:4px; display:inline-block; cursor:pointer; '
+                                f'font-size:16px; color:white;">'
+                                f'{seg_esc}</span> '
+                            )
+                    html_body += "<br>"
+                html_body += "<br>"
+            st.session_state["corrected_text"] = "\n\n".join(output.split("\n\n"))
 
         # Log any censored words
         if to_log:
@@ -556,7 +608,6 @@ def correct_text(user_input):
         # Finalize session state
         html_body = re.sub(r'(<br>\s*)+$', '', html_body)
         st.session_state["rendered_html"] = f"<div>{html_body}</div>"
-        st.session_state["corrected_text"] = "\n\n".join(output.split("\n\n"))
         st.session_state["can_download"] = False
         if "original_input" not in st.session_state:
             st.session_state["original_input"] = user_input
@@ -743,7 +794,7 @@ def list_invites_for(user: str) -> list[dict]:
     out = []
     for r in rows:
         out.append({
-            "invite_id":    r["invite_id"],
+            "invite{invite_id":    r["invite_id"],
             "file_id":      r["file_id"],
             "inviter":      r["inviter"],
             "title":        r["title"],
