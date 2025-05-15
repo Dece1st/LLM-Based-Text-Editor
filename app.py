@@ -8,11 +8,12 @@ st.set_page_config(page_title="LLM-Based Text Editor")
 for key in ['auth_stat', 'name', 'type', 'client_id', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
     st.session_state.setdefault(key, None)
 
-ip = st.context.ip_address
-if not ip:
-    ip = st.query_params.get("client_ip", [None])[0]
-client_id = ip or ""
-st.session_state['client_id'] = client_id
+if st.session_state.get("client_id") is None:
+    ip = st.context.ip_address
+    if not ip:
+        ip = st.query_params.get("client_ip", [None])[0]
+    st.session_state["client_id"] = ip or ""
+client_id = st.session_state["client_id"]
 
 st.markdown(
     """
@@ -34,7 +35,9 @@ def render_download_button():
         mime="text/plain"
     )
 
-set_db()
+if not st.session_state.get("_db_initialized"):
+    set_db()
+    st.session_state["_db_initialized"] = True
 page = get_page()
 
 if page == "login":
@@ -50,18 +53,20 @@ if page == "login":
     if submitted_login:
         user_type = search_user(name, password)
         if user_type:
-            # only ban free users by IP
+            # ban free users by IP or by name if no IP
+            lock_key = client_id if client_id else name
             if user_type == 'F':
-                lock_time = get_lockout(client_id)
+                lock_time = get_lockout(lock_key)
                 if lock_time > time.time():
                     remaining = lock_time - time.time()
                     st.error(f"You have been timed out for {remaining:.0f}s")
                     st.stop()
 
             # at this point, login OK
-            st.session_state['name']     = name
-            st.session_state['auth_stat'] = True
-            st.session_state['type']     = user_type
+            st.session_state['name']        = name
+            st.session_state['client_id']   = st.session_state['name']
+            st.session_state['auth_stat']   = True
+            st.session_state['type']        = user_type
             set_page("main")
         else:
             st.session_state['auth_stat'] = False
@@ -146,15 +151,15 @@ elif page == "moderation":
                         st.rerun()
 
         st.subheader("Pending Paid User Requests")
-        cur.execute("SELECT client_id, timestamp FROM upgrade")
+        cur.execute("SELECT client_id, req_ts FROM upgrade")
         requests = cur.fetchall()
 
         if requests:
             for row in requests:
-                name      = row['client_id']
-                ts_int    = row['timestamp']
-                ts_str    = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts_int))
-                col1, col2 = st.columns([3, 1])
+                name        = row['client_id']
+                ts_int      = row['req_ts']
+                ts_str      = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts_int))
+                col1, col2  = st.columns([3, 1])
                 with col1:
                     st.write(f"🔸 User: {name} (Requested at: {ts_str})")
                 with col2:
@@ -193,9 +198,9 @@ elif page == "logs":
         con = get_connection()
         cur = con.cursor()
         cur.execute(
-            "SELECT user, original_word, timestamp "
+            "SELECT client_id AS user, original_word, event_ts "
             "FROM censor_log "
-            "ORDER BY timestamp DESC"
+            "ORDER BY event_ts DESC"
         )
         logs = cur.fetchall()
         con.close()
@@ -204,10 +209,10 @@ elif page == "logs":
             st.info("No censored words recorded.")
         else:
             for row in logs:
-                user = row['user']
-                word = row['original_word']
-                ts   = row['timestamp']
-                ts_fmt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
+                user    = row['user']
+                word    = row['original_word']
+                ts      = row['event_ts']
+                ts_fmt  = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ts))
                 st.write(f"🔸 `{word}` was submitted by **{user}** at `{ts_fmt}`")
 
         if st.button("Back to Main Page"):
@@ -244,19 +249,104 @@ elif page == "history":
         if st.button("Logout"):
             logout_user()
 
+elif page == "collab":
+    # boost the max-width of the main content only on this page
+    st.markdown("""<style> .block-container {max-width: 1600px;} </style>""", unsafe_allow_html=True)
+    st.header("🤝 Collaborative Editor")
+
+    file_id = st.session_state.get("current_file")
+    if file_id is None:
+        st.error("No document selected. Go back to 📁 My Documents.")
+        if st.button("◀️ Back to Main"):
+            set_page("main")
+        st.stop()
+
+    orig_key = f"collab_orig_{file_id}"
+    orig = st.session_state.get(orig_key, st.session_state.get("pending_input", ""))
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("🖋️ Original")
+        new_orig = st.text_area(
+            label="", value=orig, 
+            height=400, key="collab_edit",
+            label_visibility="collapsed",
+            placeholder=""
+        )
+        if st.button("🔄 Submit for correction"):
+            st.session_state[orig_key] = new_orig
+            correct_text(new_orig)
+            st.rerun()
+
+    with right:
+        st.subheader("✅ Agreed-Upon Text")
+        if st.session_state.get("rendered_html"):
+            wrapped = wrap_scrollable(st.session_state["rendered_html"])
+            edited = html_viewer(html=wrapped, height=400)
+            if edited is not None:
+                st.session_state["corrected_text"] = edited
+        else:
+            st.info("No correction yet—click “Submit for correction” on the left.")
+
+    if st.button("◀️ Back to Main"):
+        set_page("main")
+
 elif page == "main":
+    if st.session_state.get("auth_stat") and st.session_state['type'] == 'P':
+        # show invites only to Paid or Super Users
+        with st.sidebar.expander("🔔 Notifications", expanded=False):
+            invites = list_invites_for(st.session_state['name'])
+            if not invites:
+                st.write("No new invites.")
+            else:
+                for inv in invites:
+                    ts = time.strftime(
+                        "%Y-%m-%d %H:%M",
+                        time.localtime(inv["requested_ts"])
+                    )
+                    st.write(f"📩 **{inv['title']}** from _{inv['inviter']}_ at {ts}")
+                    col1, col2 = st.columns([1,1])
+                    with col1:
+                        if st.button("Accept", key=f"accept_{inv['invite_id']}"):
+                            respond_invite(inv['invite_id'], True)
+                            st.rerun()
+                    with col2:
+                        if st.button("Reject", key=f"reject_{inv['invite_id']}"):
+                            respond_invite(inv['invite_id'], False)
+                            st.rerun()
+    
+        with st.sidebar.expander("📁 Shared Documents", expanded=False):
+            files = list_files_for(st.session_state['name'])
+            if not files:
+                st.write("No documents yet.")
+            else:
+                for f in files:
+                    ts = time.strftime("%Y-%m-%d", time.localtime(f["created_ts"]))
+                    if st.button(f"{f['title']}  ({ts})", key=f"file_{f['file_id']}"):
+                        st.session_state["current_file"] = f["file_id"]
+                        set_page("collab")
+
     if not st.session_state['auth_stat']:
         set_page("login")
     else:
         st.title("📝 LLM-Based Text Editor")
-        if st.session_state['type'] == 'S':
-            if st.button("Go to Moderation Panel"):
-                set_page("moderation")
-            
-            if st.button("View Logs"):
-                set_page("logs")
-
         st.write(f"## Hello, {st.session_state['name']}!")
+
+        #---Super-User Buttons---#
+        if st.session_state['type'] == 'S':
+            st.markdown("### 🔧 Access Super-User Controls Below")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Go to Moderation Panel"):
+                    set_page("moderation")
+            with c2:
+                if st.button("View Logs"):
+                    set_page("logs")
+            st.markdown("")
+            st.markdown("")
+            st.markdown("")
+            st.markdown("")
 
         if st.session_state['type'] == 'P':
             with st.expander("View/Add Tokens", expanded = True):
@@ -433,11 +523,38 @@ elif page == "main":
 
                 if st.session_state.get("can_download"):
                     st.markdown("### 📄 Preview of Approved Edits")
-
                     clean_text = html_to_clean_text(st.session_state["corrected_text"])
 
                     st.text_area("", clean_text, height=200, disabled=True)
                     st.success(f"💰 Deducted {st.session_state['tokens']} tokens for confirmed edits.")
+
+                    file_id = st.session_state.get("current_file")
+                    if file_id is None:
+                        # first time through, create a new file for this document
+                        title = st.text_input("Document title", value="Untitled", key="doc_title")
+                        if st.button("Initialize File"):
+                            fid = create_file(
+                                owner=st.session_state["name"],
+                                title=title
+                            )
+                            st.session_state["current_file"] = fid
+                            st.rerun()
+                        st.stop()  # wait for the user to initialize
+                    else:
+                        st.success(f"Editing Document #{file_id}")
+
+                    # (B) Invite UI: ALWAYS render the input, then the send button
+                    invitee = st.text_input("Invite collaborator (username):", key="invitee_input")
+                    if st.button("📨 Send Invite"):
+                        ok = invite_user(
+                            file_id=file_id,
+                            inviter=st.session_state["name"],
+                            invitee=invitee.strip()
+                        )
+                        if ok:
+                            st.success("✅ Invite sent!")
+                        else:
+                            st.error("❌ User not found or already invited.")
 
                     if st.download_button(
                         label="📥 Download .txt File (5 Tokens)",

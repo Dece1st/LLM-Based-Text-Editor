@@ -10,7 +10,9 @@ DB_URL = os.getenv("DATABASE_URL")
 def get_connection():
     if not DB_URL:
         raise RuntimeError("DATABASE_URL not set")
-    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+    con = psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+    con.autocommit = True
+    return con
 
 def set_db():
     con = get_connection()
@@ -52,7 +54,7 @@ def set_db():
     # Lockouts
     cur.execute("""
     CREATE TABLE IF NOT EXISTS lockout (
-        client_id TEXT PRIMARY KEY REFERENCES account(client_id),
+        client_id TEXT PRIMARY KEY,
         lock_ts   BIGINT NOT NULL DEFAULT 0
     );
     """)
@@ -72,6 +74,35 @@ def set_db():
     CREATE TABLE IF NOT EXISTS upgrade (
         client_id TEXT PRIMARY KEY REFERENCES account(client_id),
         req_ts    BIGINT NOT NULL
+    );
+    """)
+    # Documents/files
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS file (
+      file_id     SERIAL PRIMARY KEY,
+      owner       TEXT NOT NULL REFERENCES account(client_id),
+      title       TEXT,
+      created_ts  BIGINT NOT NULL
+    );
+    """)
+    # Collaborators link table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS collaborator (
+      file_id    INTEGER NOT NULL REFERENCES file(file_id),
+      client_id  TEXT    NOT NULL REFERENCES account(client_id),
+      role       TEXT    NOT NULL DEFAULT 'edit',
+      PRIMARY KEY (file_id, client_id)
+    );
+    """)
+    # Pending invites
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS invite (
+      invite_id     SERIAL PRIMARY KEY,
+      file_id       INTEGER NOT NULL REFERENCES file(file_id),
+      inviter       TEXT    NOT NULL REFERENCES account(client_id),
+      invitee       TEXT    NOT NULL REFERENCES account(client_id),
+      status        TEXT    NOT NULL CHECK (status IN ('pending','accepted','rejected')),
+      requested_ts  BIGINT NOT NULL
     );
     """)
     con.commit()
@@ -542,7 +573,7 @@ def submit_blacklist_word(word: str):
 
     con.close()
 
-######## CSS Style for Corrected Text Box ########
+#--- CSS Style for Corrected Text Box ---#
 SCROLLABLE_CSS = """
 <style>
 .scrollable {
@@ -576,3 +607,161 @@ SCROLLABLE_CSS = """
 
 def wrap_scrollable(raw_html: str) -> str:
     return f"{SCROLLABLE_CSS}<div class='scrollable'>{raw_html}</div>"
+
+def create_file(owner: str, title: str) -> int:
+    """
+    Create a new file record and add the owner as its first collaborator.
+    Returns the new file_id.
+    """
+    con = get_connection()
+    cur = con.cursor()
+    created_ts = int(time.time())
+    # 1) Insert into file, returning its ID
+    cur.execute(
+        """
+        INSERT INTO file (owner, title, created_ts)
+             VALUES (%s,   %s,    %s)
+        RETURNING file_id
+        """,
+        (owner, title, created_ts)
+    )
+    file_id = cur.fetchone()["file_id"]
+    # 2) Add owner as collaborator
+    cur.execute(
+        """
+        INSERT INTO collaborator (file_id, client_id)
+             VALUES (%s,       %s)
+        ON CONFLICT DO NOTHING
+        """,
+        (file_id, owner)
+    )
+    con.commit()
+    con.close()
+    return file_id
+
+def invite_user(file_id: int, inviter: str, invitee: str) -> bool:
+    """
+    Send a collaboration invite.
+    Returns False if the invitee doesn’t exist or is already a collaborator/invited;
+    True if the invite was created.
+    """
+    con = get_connection()
+    cur = con.cursor()
+
+    # (a) ensure the invitee exists
+    cur.execute("SELECT 1 FROM account WHERE client_id = %s", (invitee,))
+    if not cur.fetchone():
+        con.close()
+        return False
+
+    # (b) no duplicate invite or existing collaborator
+    cur.execute(
+        "SELECT 1 FROM collaborator WHERE file_id = %s AND client_id = %s",
+        (file_id, invitee)
+    )
+    if cur.fetchone():
+        con.close()
+        return False
+
+    cur.execute(
+        "SELECT 1 FROM invite "
+        " WHERE file_id = %s AND invitee = %s AND status = 'pending'",
+        (file_id, invitee)
+    )
+    if cur.fetchone():
+        con.close()
+        return False
+
+    # (c) create the pending invite
+    req_ts = int(time.time())
+    cur.execute(
+        """
+        INSERT INTO invite (file_id, inviter, invitee, status, requested_ts)
+             VALUES (%s,      %s,       %s,      'pending', %s)
+        """,
+        (file_id, inviter, invitee, req_ts)
+    )
+
+    con.commit()
+    con.close()
+    return True
+
+def list_invites_for(user: str) -> list[dict]:
+    """
+    Returns all pending invites for `user`.
+    Each dict has keys: invite_id, file_id, inviter, title, requested_ts.
+    """
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute("""
+      SELECT i.invite_id, i.file_id, i.inviter, f.title, i.requested_ts
+        FROM invite i
+        JOIN file f ON f.file_id = i.file_id
+       WHERE i.invitee = %s
+         AND i.status = 'pending'
+       ORDER BY i.requested_ts DESC
+    """, (user,))
+    rows = cur.fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        out.append({
+            "invite_id":    r["invite_id"],
+            "file_id":      r["file_id"],
+            "inviter":      r["inviter"],
+            "title":        r["title"],
+            "requested_ts": r["requested_ts"],
+        })
+    return out
+
+def respond_invite(invite_id: int, accept: bool) -> None:
+    """
+    Mark the given invite as accepted or rejected.
+    If accepted, also add to collaborator table.
+    """
+    con = get_connection()
+    cur = con.cursor()
+    status = "accepted" if accept else "rejected"
+
+    # 1) update invite status
+    cur.execute("UPDATE invite SET status = %s WHERE invite_id = %s", (status, invite_id))
+
+    # 2) if accepted, add to collaborators
+    if accept:
+        cur.execute("SELECT file_id, invitee FROM invite WHERE invite_id = %s", (invite_id,))
+        row = cur.fetchone()
+        if row:
+            fid  = row["file_id"]
+            user = row["invitee"]
+            cur.execute(
+                """
+                INSERT INTO collaborator (file_id, client_id)
+                     VALUES (%s,       %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (fid, user)
+            )
+
+    con.commit()
+    con.close()
+
+def list_files_for(user: str) -> list[dict]:
+    """
+    Returns every file the user owns or is a collaborator on.
+    Each dict: file_id, title, owner, created_ts.
+    """
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute("""
+      SELECT f.file_id, f.title, f.owner, f.created_ts
+        FROM file f
+        JOIN collaborator c ON c.file_id = f.file_id
+       WHERE c.client_id = %s
+       ORDER BY f.created_ts DESC
+    """, (user,))
+    rows = cur.fetchall()
+    con.close()
+    return [
+        {"file_id": r["file_id"], "title": r["title"], "owner": r["owner"], "created_ts": r["created_ts"]}
+        for r in rows
+    ]
