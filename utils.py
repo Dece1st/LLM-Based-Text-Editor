@@ -389,6 +389,16 @@ def correct_text(user_input):
         st.error("❌ Failed to connect to the language model. Please try again.")
         st.stop()
 
+def is_instruction_like(text: str) -> bool:
+    words = text.strip().split()
+    if len(words) >= 25:
+        return False
+
+    pattern = (
+        r"(can you|fix|correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))"
+    )
+    return bool(re.search(pattern, text.lower()))
+
 def render_blacklist_form():
     st.markdown("---")
     st.subheader("🚫 Suggest a word for blacklist")

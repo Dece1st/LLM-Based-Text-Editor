@@ -237,7 +237,7 @@ elif page == "main":
         st.write(f"## Hello, {st.session_state['name']}!")
 
         if st.session_state['type'] == 'P':
-            with st.expander("## View/Add Tokens", expanded = True):
+            with st.expander("View/Add Tokens", expanded = True):
                 show_paid_user_metrics(st.session_state['client_id'])
                 token_input = st.number_input("Enter Tokens", min_value=1, step=1)
                 
@@ -298,18 +298,16 @@ elif page == "main":
             if st.button("Submit"):
                 if user_input.strip():
                     word_count = len(user_input.split())
-                    instruction_like = (
-                        re.search(
-                            r"(correct grammar|output only|do not explain|return it unchanged|fix (spelling|punctuation))",
-                            user_input.lower()
-                        )
-                        and word_count < 25
-                    )
+
+                    if word_count <= 5:
+                        st.warning("⚠️ Your input must have more than 5 words.")
+                        st.stop()
+                    
+                    instruction_like = is_instruction_like(user_input)
+
                     if instruction_like:
-                        st.warning(
-                            "⚠️ Your input looks like an instruction. "
-                            "If you're trying to correct a real sentence, rephrase it."
-                        )
+                        st.warning("⚠️ Your input looks like an instruction. If you're trying to correct a real sentence, rephrase it.")
+
                     else:
                         # Free user flow
                         if st.session_state['type'] == 'F':
@@ -319,7 +317,6 @@ elif page == "main":
                             else:
                                 st.session_state["user_input"] = user_input
                                 correct_text(user_input)
-
                         # Paid user flow: defer to confirmation
                         elif st.session_state['type'] == 'P':
                             available, used = get_token(st.session_state['client_id'])
