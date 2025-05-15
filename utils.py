@@ -106,6 +106,26 @@ def set_db():
       requested_ts  BIGINT NOT NULL
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS complaint (
+        complaint_id  SERIAL PRIMARY KEY,
+        file_id      INTEGER NOT NULL REFERENCES file(file_id),
+        complainant  TEXT NOT NULL REFERENCES account(client_id),
+        complained   TEXT NOT NULL REFERENCES account(client_id),
+        description  TEXT NOT NULL,
+        status       TEXT NOT NULL CHECK (status IN ('pending', 'resolved')) DEFAULT 'pending',
+        created_ts   BIGINT NOT NULL
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS complaint_response (
+        response_id  SERIAL PRIMARY KEY,
+        complaint_id INTEGER NOT NULL REFERENCES complaint(complaint_id),
+        client_id    TEXT NOT NULL REFERENCES account(client_id),
+        response     TEXT NOT NULL,
+        created_ts   BIGINT NOT NULL
+    );
+    """)
     con.commit()
     con.close()
 
@@ -794,7 +814,7 @@ def list_invites_for(user: str) -> list[dict]:
     out = []
     for r in rows:
         out.append({
-            "invite{invite_id":    r["invite_id"],
+            "invite_id":    r["invite_id"],
             "file_id":      r["file_id"],
             "inviter":      r["inviter"],
             "title":        r["title"],
@@ -878,3 +898,200 @@ def get_file_content(file_id: int) -> str:
     if not row:
         return ""
     return row["content"] if isinstance(row, dict) else row[0]
+
+def submit_complaint(file_id: int, complainant: str, complained: str, description: str) -> bool:
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        # Verify both users are collaborators
+        cur.execute(
+            """
+            SELECT 1 FROM collaborator
+            WHERE file_id = %s AND client_id = %s
+            INTERSECT
+            SELECT 1 FROM collaborator
+            WHERE file_id = %s AND client_id = %s
+            """,
+            (file_id, complainant, file_id, complained)
+        )
+        if not cur.fetchone():
+            return False
+        # Prevent self-complaint
+        if complainant == complained:
+            return False
+        # Insert complaint
+        cur.execute(
+            """
+            INSERT INTO complaint (file_id, complainant, complained, description, status, created_ts)
+            VALUES (%s, %s, %s, %s, 'pending', %s)
+            """,
+            (file_id, complainant, complained, description, int(time.time()))
+        )
+        con.commit()
+        return True
+    except psycopg2.IntegrityError:
+        return False
+    finally:
+        con.close()
+
+def get_complaint_paid(client_id: str) -> list[dict]:
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT c.complaint_id, c.file_id, c.complainant, c.description, c.created_ts, f.title
+        FROM complaint c
+        JOIN file f ON c.file_id = f.file_id
+        WHERE c.complained = %s AND c.status = 'pending'
+        ORDER BY c.created_ts DESC
+        """,
+        (client_id,)
+    )
+    rows = cur.fetchall()
+    con.close()
+    return [
+        {
+            "complaint_id": r["complaint_id"],
+            "file_id": r["file_id"],
+            "complainant": r["complainant"],
+            "description": r["description"],
+            "created_ts": r["created_ts"],
+            "title": r["title"]
+        }
+        for r in rows
+    ]
+
+def submit_complaint_response(complaint_id: int, client_id: str, response: str) -> bool:
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO complaint_response (complaint_id, client_id, response, created_ts)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (complaint_id, client_id, response, int(time.time()))
+        )
+        con.commit()
+        return True
+    except psycopg2.IntegrityError:
+        return False
+    finally:
+        con.close()
+
+def get_complaint_super() -> list[dict]:
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT c.complaint_id, c.file_id, c.complainant, c.complained, c.description, c.created_ts, f.title
+        FROM complaint c
+        JOIN file f ON c.file_id = f.file_id
+        WHERE c.status = 'pending'
+        ORDER BY c.created_ts DESC
+        """,
+    )
+    complaints = cur.fetchall()
+    out = []
+    for c in complaints:
+        # Fetch responses
+        cur.execute(
+            """
+            SELECT client_id, response, created_ts
+            FROM complaint_response
+            WHERE complaint_id = %s
+            ORDER BY created_ts DESC
+            """,
+            (c["complaint_id"],)
+        )
+        responses = cur.fetchall()
+        out.append({
+            "complaint_id": c["complaint_id"],
+            "file_id": c["file_id"],
+            "complainant": c["complainant"],
+            "complained": c["complained"],
+            "description": c["description"],
+            "created_ts": c["created_ts"],
+            "title": c["title"],
+            "responses": [
+                {"client_id": r["client_id"], "response": r["response"], "created_ts": r["created_ts"]}
+                for r in responses
+            ]
+        })
+    con.close()
+    return out
+
+def handle_complaint():
+    if st.session_state['type'] not in ('P', 'S'):
+        st.session_state['complaints_checked'] = True
+        return
+    complaints = get_complaint_paid(st.session_state['name'])
+    if not complaints:
+        st.session_state['complaints_checked'] = True
+        return
+    st.session_state['complaints_checked'] = False
+    st.markdown("You Have Pending Complaints")
+    st.warning("You must respond to all complaints before proceeding.")
+    for complaint in complaints:
+        ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(complaint['created_ts']))
+        with st.form(key=f"complaint_{complaint['complaint_id']}"):
+            st.write(f"**Complaint from {complaint['complainant']}** on document '{complaint['title']}' at {ts}")
+            st.write(f"**Description**: {complaint['description']}")
+            response = st.text_area("Your Response", key=f"response_{complaint['complaint_id']}")
+            submit = st.form_submit_button("Submit Response")
+            if submit and response.strip():
+                if submit_complaint_response(complaint['complaint_id'], st.session_state['name'], response):
+                    st.success("Response submitted.")
+                    st.rerun()
+                else:
+                    st.error("Failed to submit response.")
+    st.stop()
+
+def resolve_complaint(complaint_id: int, complainant_penalty: int, complained_penalty: int) -> tuple[bool, str]:
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        # Fetch complainant and complained
+        cur.execute(
+            """
+            SELECT complainant, complained
+            FROM complaint
+            WHERE complaint_id = %s
+            """,
+            (complaint_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return False, "Complaint not found"
+        complainant = row["complainant"]
+        complained = row["complained"]
+
+        # Check token balances
+        complainant_tokens, _ = get_token(complainant)
+        complained_tokens, _ = get_token(complained)
+        if complainant_tokens < complainant_penalty:
+            return False, f"Complainant has only {complainant_tokens} tokens, cannot deduct {complainant_penalty}"
+        if complained_tokens < complained_penalty:
+            return False, f"Complained user has only {complained_tokens} tokens, cannot deduct {complained_penalty}"
+
+        # Apply penalties
+        if complainant_penalty > 0:
+            update_token(complainant, -complainant_penalty, complainant_penalty)
+        if complained_penalty > 0:
+            update_token(complained, -complained_penalty, complained_penalty)
+
+        # Mark complaint as resolved
+        cur.execute(
+            """
+            UPDATE complaint
+            SET status = 'resolved'
+            WHERE complaint_id = %s
+            """,
+            (complaint_id,)
+        )
+        con.commit()
+        return True, "Complaint resolved successfully"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        con.close()

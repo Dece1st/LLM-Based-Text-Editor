@@ -8,6 +8,8 @@ st.set_page_config(page_title="LLM-Based Text Editor")
 for key in ['auth_stat', 'name', 'type', 'client_id', 'corrected_text', 'rendered_html', 'can_download', 'user_input']:
     st.session_state.setdefault(key, None)
 
+st.session_state.setdefault('complaints_checked', False)
+
 if st.session_state.get("client_id") is None:
     ip = st.context.ip_address
     if not ip:
@@ -176,6 +178,44 @@ elif page == "moderation":
                         st.rerun()
         else:
             st.info("No pending requests.")
+        
+        st.subheader("Resolve Complaints")
+        complaints = get_complaint_super()
+        if not complaints:
+            st.info("No pending complaints.")
+        else:
+            for complaint in complaints:
+                ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(complaint['created_ts']))
+                with st.expander(f"Complaint #{complaint['complaint_id']} on '{complaint['title']}' at {ts}"):
+                    st.write(f"**Complainant**: {complaint['complainant']}")
+                    st.write(f"**Complained**: {complaint['complained']}")
+                    st.write(f"**Description**: {complaint['description']}")
+                    if complaint['responses']:
+                        st.write("**Responses**:")
+                        for resp in complaint['responses']:
+                            rts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(resp['created_ts']))
+                            st.write(f"- {resp['client_id']} at {rts}: {resp['response']}")
+                    else:
+                        st.write("**Responses**: None")
+                    with st.form(key=f"resolve_{complaint['complaint_id']}"):
+                        complainant_penalty = st.number_input(
+                            f"Penalty for {complaint['complainant']} (tokens)",
+                            min_value=0, step=1, key=f"comp_penalty_{complaint['complaint_id']}"
+                        )
+                        complained_penalty = st.number_input(
+                            f"Penalty for {complaint['complained']} (tokens)",
+                            min_value=0, step=1, key=f"compld_penalty_{complaint['complaint_id']}"
+                        )
+                        submit = st.form_submit_button("Resolve")
+                        if submit:
+                            success, message = resolve_complaint(
+                                complaint['complaint_id'], complainant_penalty, complained_penalty
+                            )
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
 
         con.close()
 
@@ -246,6 +286,9 @@ elif page == "history":
             logout_user()
 
 elif page == "collab":
+    if not st.session_state['complaints_checked']:
+        handle_complaint()
+    
     # boost the max-width of the main content only on this page
     st.markdown("""<style> .block-container {max-width: 1600px;} </style>""", unsafe_allow_html=True)
     file_id       = st.session_state.get("current_file")
@@ -293,10 +336,28 @@ elif page == "collab":
         if edited is not None:
             st.session_state[clean_key] = edited
 
+    if st.session_state['type'] == 'P':
+        st.markdown("---")
+        st.subheader("File a Complaint")
+        with st.form("complaint_form"):
+            complained_user = st.text_input("Collaborator Username")
+            description = st.text_area("Complaint Description")
+            submit_complaint_btn = st.form_submit_button("Submit Complaint")
+            if submit_complaint_btn:
+                if not complained_user or not description:
+                    st.error("Please fill in all fields.")
+                elif submit_complaint(file_id, st.session_state['name'], complained_user, description):
+                    st.success("Complaint submitted for super-user review.")
+                else:
+                    st.error("Invalid collaborator or complaint already exists.")
+
     if st.button("◀️ Back to Main"):
         set_page("main")
 
 elif page == "main":
+    if not st.session_state['complaints_checked']:
+        handle_complaint()
+
     if not st.session_state['auth_stat']:
         set_page("login")
     else:
